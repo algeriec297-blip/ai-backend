@@ -2,7 +2,7 @@ export const appConfig = {
   appUrl: process.env.APP_URL ?? "http://localhost:3000",
   apiUrl: process.env.API_URL ?? "http://localhost:3000",
   gemini: {
-    model: process.env.GEMINI_MODEL ?? "gemini-3.8-flash",
+    model: process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite",
     inputUsdPerMillionTokens: Number(process.env.GEMINI_INPUT_USD_PER_MILLION ?? "0.30"),
     outputUsdPerMillionTokens: Number(process.env.GEMINI_OUTPUT_USD_PER_MILLION ?? "2.50"),
     timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? "60000"),

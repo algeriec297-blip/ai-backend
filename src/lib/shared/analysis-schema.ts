@@ -256,6 +256,14 @@ function confidence(value: unknown, field: string): number | null {
   return value;
 }
 
+function normalizeConfidence(value: unknown, field: string, status: AnalysisStatus, evidenceCount = 0): number {
+  const base = confidence(value, field) ?? 0;
+  if (status === "UNKNOWN" || evidenceCount === 0) return 0;
+  if (status === "FACT") return Math.min(Math.max(base, 0.05), 0.98);
+  if (status === "INFERENCE") return Math.min(Math.max(base, 0.05), 0.8);
+  return 0;
+}
+
 function safeStringArray(value: unknown, field: string, maxItems = 40): string[] {
   return Array.isArray(value) ? stringArray(value, field, maxItems) : [];
 }
@@ -295,7 +303,7 @@ function statusField<T>(value: unknown, field: string): StatusField<T> {
   return {
     value: entry.value as T,
     status,
-    confidence: confidence(entry.confidence, `${field}.confidence`) ?? 0,
+    confidence: normalizeConfidence(entry.confidence, `${field}.confidence`, status, evidenceIds.length),
     evidence_ids: evidenceIds,
   };
 }
@@ -700,13 +708,15 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
     signals: Array.isArray(root.signals) ? root.signals.slice(0, 40).map((item) => {
       const signal = record(item, "signals.item");
       const id = nullableString(signal.id ?? null, "signals.id", 100) ?? `sig_${Math.random().toString(36).slice(2, 8)}`;
+      const normalizedStatus = signal.status === "FACT" || signal.status === "INFERENCE" || signal.status === "UNKNOWN" ? signal.status : "UNKNOWN";
+      const evidenceIds = Array.isArray(signal.evidence_ids) ? signal.evidence_ids.map((entry) => String(entry)).slice(0, 20) : [];
       return {
         id,
         type: nullableString(signal.type ?? null, "signals.type", 100) ?? "unknown",
         value: signal.value === null || typeof signal.value === "boolean" ? signal.value : null,
-        status: signal.status === "FACT" || signal.status === "INFERENCE" || signal.status === "UNKNOWN" ? signal.status : "UNKNOWN",
-        confidence: confidence(signal.confidence, "signals.confidence") ?? 0,
-        evidence_ids: Array.isArray(signal.evidence_ids) ? signal.evidence_ids.map((entry) => String(entry)).slice(0, 20) : [],
+        status: normalizedStatus,
+        confidence: normalizeConfidence(signal.confidence, "signals.confidence", normalizedStatus, evidenceIds.length),
+        evidence_ids: evidenceIds,
       };
     }) : [],
     evidence: Array.isArray(root.evidence) ? root.evidence.slice(0, 120).map((item) => {
@@ -718,11 +728,12 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       if (sourceUrl && quote && !normalizeEvidenceText(pageText).includes(normalizeEvidenceText(quote))) {
         throw new Error("Evidence excerpt does not appear in the source page");
       }
+      const status = analyzeStatus(evidenceItem.status ?? evidenceItem.kind ?? "UNKNOWN");
       return {
         id: nullableString(evidenceItem.id ?? null, "evidence.id", 50) ?? "ev_unknown",
         field: nullableString(evidenceItem.field ?? null, "evidence.field", 120) ?? "unknown",
-        status: analyzeStatus(evidenceItem.status ?? evidenceItem.kind ?? "UNKNOWN"),
-        confidence: confidence(evidenceItem.confidence, "evidence.confidence") ?? 0,
+        status,
+        confidence: normalizeConfidence(evidenceItem.confidence, "evidence.confidence", status, sourceUrl ? 1 : 0),
         quote,
         source_url: sourceUrl ?? "",
         source_page_type: nullableString(evidenceItem.source_page_type ?? null, "evidence.source_page_type", 100) ?? "unknown",
