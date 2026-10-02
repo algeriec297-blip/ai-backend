@@ -53,4 +53,14 @@ describe("validateBusinessAnalysis", () => {
     payload.evidence[0].excerpt = "This phrase is not on the page.";
     expect(() => validateBusinessAnalysis(payload, new Map([[sourceUrl, "100 Example Street"]]))).toThrow(/does not appear/);
   });
+
+  it("accepts verbatim evidence when only punctuation, whitespace, or Unicode form differs", () => {
+    const payload = validPayload();
+    payload.evidence[0].excerpt = "100 — Example   Street!";
+    const result = validateBusinessAnalysis(
+      payload,
+      new Map([[sourceUrl, "Contact us at 100 Example Street for details."]]),
+    );
+    expect(result.evidence[0].excerpt).toBe("100 — Example   Street!");
+  });
 });
