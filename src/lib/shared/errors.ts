@@ -32,6 +32,12 @@ export class ApiError extends Error {
 
   constructor(readonly code: ApiErrorCode, message: string, status = statusByCode[code]) {
     super(message);
+    Object.defineProperty(this, "message", {
+      value: message,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
     this.name = "ApiError";
     this.status = status;
   }
