@@ -160,7 +160,11 @@ export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
       }
     }
 
-    if (!pages[0]?.text || pages[0].text.length < 40) {
+    const readableContent = pages
+      .map((page) => [page.title, page.description, page.text].filter(Boolean).join("\n"))
+      .join("\n")
+      .trim();
+    if (readableContent.length < 40) {
       throw new ApiError("SITE_BLOCKED", "The website did not provide enough readable content.");
     }
     const analysis = await analyzeWithGemini(pages, controller.signal);

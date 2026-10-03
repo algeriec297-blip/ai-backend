@@ -10,6 +10,11 @@ interface ResolvedAddress {
   family: 4 | 6;
 }
 
+interface LookupResultAddress {
+  address: string;
+  family: number;
+}
+
 export interface SafeHtmlResponse {
   url: string;
   html: string;
@@ -68,6 +73,41 @@ function safeNetworkError(error: unknown) {
   };
 }
 
+function networkErrorCode(error: unknown): string | undefined {
+  const source = error && typeof error === "object" ? error as {
+    code?: unknown;
+    cause?: unknown;
+  } : {};
+  const cause = source.cause && typeof source.cause === "object"
+    ? source.cause as { code?: unknown }
+    : {};
+  const code = typeof source.code === "string" ? source.code
+    : typeof cause.code === "string" ? cause.code
+      : undefined;
+  return code?.slice(0, 80);
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  return new Set([
+    "EAI_AGAIN",
+    "ECONNABORTED",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "EPIPE",
+    "ETIMEDOUT",
+  ]).has(networkErrorCode(error) ?? "");
+}
+
+function fetchFailureMessage(stage: "dns" | "request", error: unknown): string {
+  const code = networkErrorCode(error);
+  if (stage === "dns") {
+    return code ? `The website DNS lookup failed (${code}).` : "The website DNS lookup failed.";
+  }
+  return code ? `The website connection failed (${code}).` : "The website connection failed.";
+}
+
 function logFetchFailure(stage: string, url: URL, error: unknown, details: Record<string, unknown> = {}) {
   console.warn("Website fetch failed", {
     stage,
@@ -76,6 +116,32 @@ function logFetchFailure(stage: string, url: URL, error: unknown, details: Recor
     ...details,
     error: safeNetworkError(error),
   });
+}
+
+async function lookupWithDeadline(
+  hostname: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<LookupResultAddress[]> {
+  let timer: NodeJS.Timeout | undefined;
+  let abortListener: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      lookup(hostname, { all: true, verbatim: true }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new ApiError("TIMEOUT", "The website DNS lookup exceeded its deadline.")),
+          timeoutMs,
+        );
+        abortListener = () => reject(new ApiError("TIMEOUT", "The analysis deadline was reached."));
+        signal?.addEventListener("abort", abortListener, { once: true });
+        if (signal?.aborted) abortListener();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (abortListener) signal?.removeEventListener("abort", abortListener);
+  }
 }
 
 export function normalizeUserUrl(input: unknown): URL {
@@ -105,31 +171,24 @@ export function normalizeUserUrl(input: unknown): URL {
   return url;
 }
 
-function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(new ApiError("TIMEOUT", "The analysis deadline was reached."));
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(new ApiError("TIMEOUT", "The analysis deadline was reached."));
-    signal.addEventListener("abort", abort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", abort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      },
-    );
-  });
-}
-
-async function resolvePublicHost(hostname: string, signal?: AbortSignal): Promise<ResolvedAddress[]> {
+async function resolvePublicHost(hostname: string, timeoutMs: number, signal?: AbortSignal): Promise<ResolvedAddress[]> {
   const unwrapped = hostname.replace(/^\[|\]$/g, "");
   const literalFamily = isIP(unwrapped);
-  const addresses = literalFamily
-    ? [{ address: unwrapped, family: literalFamily }]
-    : await abortable(lookup(unwrapped, { all: true, verbatim: true }), signal);
+  let addresses: LookupResultAddress[];
+  if (literalFamily) {
+    addresses = [{ address: unwrapped, family: literalFamily }];
+  } else {
+    const lookupStartedAt = Date.now();
+    try {
+      addresses = await lookupWithDeadline(unwrapped, timeoutMs, signal);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (networkErrorCode(error) !== "EAI_AGAIN") throw error;
+      const remainingTimeout = timeoutMs - (Date.now() - lookupStartedAt);
+      if (remainingTimeout <= 0) throw new ApiError("TIMEOUT", "The website DNS lookup exceeded its deadline.");
+      addresses = await lookupWithDeadline(unwrapped, remainingTimeout, signal);
+    }
+  }
   if (addresses.length === 0 || addresses.some(({ address }) => !isPublicAddress(address))) {
     throw new ApiError("UNSAFE_URL", "The website resolves to a non-public network address.");
   }
@@ -205,28 +264,54 @@ export async function fetchSafeHtml(
 ): Promise<SafeHtmlResponse> {
   let url = normalizeUserUrl(input.toString());
   let downloadedBytes = 0;
+  const pageDeadline = Date.now() + timeoutMs;
   for (let redirectCount = 0; redirectCount <= appConfig.analysis.maxRedirects; redirectCount += 1) {
     if (signal?.aborted) throw new ApiError("TIMEOUT", "The analysis deadline was reached.");
     const remainingBytes = maxBytes - downloadedBytes;
     if (remainingBytes <= 0) throw new ApiError("SITE_BLOCKED", "The website exceeded the allowed analysis response size.");
     let addresses: ResolvedAddress[];
     try {
-      addresses = await resolvePublicHost(url.hostname, signal);
+      addresses = await resolvePublicHost(url.hostname, Math.max(1, pageDeadline - Date.now()), signal);
     } catch (error) {
       if (error instanceof ApiError) throw error;
       logFetchFailure("dns", url, error);
-      throw new ApiError("FETCH_FAILED", "The website could not be fetched.");
+      throw new ApiError("FETCH_FAILED", fetchFailureMessage("dns", error));
     }
     if (signal?.aborted) throw new ApiError("TIMEOUT", "The analysis deadline was reached.");
-    const address = addresses.find((entry) => entry.family === 4) ?? addresses[0];
-    let response: Awaited<ReturnType<typeof requestPinned>>;
-    try {
-      response = await requestPinned(url, address, remainingBytes, timeoutMs, signal);
-    } catch (error) {
-      logFetchFailure("request", url, error, { addressFamily: address.family, timeoutMs });
-      if (error instanceof ApiError) throw error;
-      throw new ApiError("FETCH_FAILED", "The website could not be fetched.");
+    let response: Awaited<ReturnType<typeof requestPinned>> | undefined;
+    const preferredAddresses = [
+      addresses.find((entry) => entry.family === 4),
+      addresses.find((entry) => entry.family === 6),
+      ...addresses,
+    ].filter((entry): entry is ResolvedAddress => entry !== undefined)
+      .filter((entry, index, all) => all.findIndex((candidate) => candidate.address === entry.address) === index);
+    const requestAddresses = preferredAddresses.slice(0, 2);
+    let lastRequestError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const address = requestAddresses[Math.min(attempt, requestAddresses.length - 1)];
+      const remainingTimeout = pageDeadline - Date.now();
+      if (remainingTimeout <= 0) {
+        throw new ApiError("TIMEOUT", "The website exceeded the fetch deadline.");
+      }
+      try {
+        response = await requestPinned(url, address, remainingBytes, remainingTimeout, signal);
+        lastRequestError = undefined;
+        break;
+      } catch (error) {
+        lastRequestError = error;
+        logFetchFailure("request", url, error, {
+          addressFamily: address.family,
+          attempt: attempt + 1,
+          timeoutMs: remainingTimeout,
+        });
+        if (error instanceof ApiError) throw error;
+        if (attempt === 1 || !isRetryableNetworkError(error)) break;
+      }
     }
+    if (lastRequestError !== undefined) {
+      throw new ApiError("FETCH_FAILED", fetchFailureMessage("request", lastRequestError));
+    }
+    if (!response) throw new ApiError("FETCH_FAILED", "The website could not be fetched.");
     downloadedBytes += response.body.length;
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.location;
