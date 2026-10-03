@@ -1,5 +1,5 @@
 import { appConfig, estimateGeminiCost } from "@/lib/shared/config";
-import { ApiError } from "@/lib/shared/errors";
+import { ApiError, safeErrorDetails } from "@/lib/shared/errors";
 import { validateBusinessAnalysis, type BusinessAnalysis } from "@/lib/shared/analysis-schema";
 
 interface SourcePage {
@@ -149,6 +149,9 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
   analysisSignal?.addEventListener("abort", abortAnalysis, { once: true });
   if (analysisSignal?.aborted) abortAnalysis();
   let response: Response | undefined;
+  let requestAttempt = 0;
+  const startedAt = Date.now();
+  const schemaCharacters = JSON.stringify(businessSchema).length;
   try {
     const endpoint = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(appConfig.gemini.model)}:generateContent`);
     endpoint.searchParams.set("key", apiKey);
@@ -157,6 +160,7 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
       generationConfig: { responseMimeType: "application/json", responseSchema: businessSchema },
     });
     for (let attempt = 0; attempt <= 4; attempt += 1) {
+      requestAttempt = attempt + 1;
       response = await fetch(endpoint, {
         method: "POST",
         redirect: "error",
@@ -164,7 +168,7 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
         headers: { "content-type": "application/json" },
         body: requestBody,
       });
-      if (![429, 503].includes(response.status) || attempt === 4) break;
+      if (![429, 500, 503].includes(response.status) || attempt === 4) break;
       const retryAfter = Number(response.headers.get("retry-after"));
       const backoffMs = Math.min(8_000, 1_000 * (2 ** attempt) + Math.floor(Math.random() * 250));
       const delayMs = Number.isFinite(retryAfter) && retryAfter > 0
@@ -179,9 +183,25 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
       await waitForRetry(delayMs, controller.signal);
     }
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    const errorDetails = safeErrorDetails(error);
+    const aborted = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+    const diagnostics = {
+      model: appConfig.gemini.model,
+      attempt: requestAttempt,
+      pagesAnalyzed: pages.length,
+      promptCharacters: prompt.length,
+      schemaCharacters,
+      elapsedMs: Date.now() - startedAt,
+      httpStatus: errorDetails.httpStatus,
+      errorType: errorDetails.errorType,
+      errorMessage: errorDetails.errorMessage,
+      errorCode: errorDetails.errorCode,
+      causeType: errorDetails.causeType,
+      causeCode: errorDetails.causeCode,
+    };
+    if (aborted) {
       console.warn("Gemini analysis timed out", {
-        model: appConfig.gemini.model,
+        ...diagnostics,
         timeoutSource: timeoutSource ?? "unknown",
         geminiTimeoutMs: appConfig.gemini.timeoutMs,
         totalAnalysisTimeoutMs: appConfig.analysis.totalTimeoutMs,
@@ -191,6 +211,7 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
         : "Gemini analysis timed out. Try again; the model may still be processing this request.";
       throw new ApiError("TIMEOUT", message);
     }
+    console.error("Gemini request failed", diagnostics);
     throw new ApiError("ANALYSIS_FAILED", "Gemini analysis could not be completed.");
   } finally {
     clearTimeout(timeout);
@@ -223,6 +244,10 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
       httpStatus: response.status,
       providerStatus,
       providerCode,
+      attempt: requestAttempt,
+      pagesAnalyzed: pages.length,
+      promptCharacters: prompt.length,
+      schemaCharacters,
       quotaIds,
       requestId,
     });
