@@ -1,4 +1,5 @@
 import cors from "cors";
+import { randomUUID } from "node:crypto";
 import express, { type NextFunction, type Request as ExpressRequest, type Response as ExpressResponse } from "express";
 import { GET as getAnalysis } from "@/routes/v1/analysis/[id]/route";
 import { POST as analyze } from "@/routes/v1/analyze/route";
@@ -96,13 +97,17 @@ app.use((error: unknown, _request: ExpressRequest, response: ExpressResponse, _n
     response.status(403).json({ error: { code: "CORS_ORIGIN_DENIED", message: "This browser origin is not allowed." } });
     return;
   }
+  const referenceId = randomUUID();
   console.error("Backend middleware failed", {
+    referenceId,
     method: _request.method,
     path: _request.path,
     code: "INTERNAL_ERROR",
     ...safeErrorDetails(error),
   });
-  response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } });
+  response.status(500).json({
+    error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred.", reference_id: referenceId },
+  });
 });
 
 const server = app.listen(port, host, () => {
