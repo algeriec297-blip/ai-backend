@@ -299,16 +299,28 @@ function evidenceAnchor(field: string): RegExp | null {
     b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b/,
     appears_b2c: /\b(?:b2c|consumer(?:s)?|individuals|households|personal use)\b/,
     online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
+    has_online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
+    lacks_online_booking: /\b(?:no online booking|booking unavailable|appointments? by phone only|call to book|book by phone only)\b/,
     booking_system: /\b(?:book(?:ing)?|appointment|schedule)\b/,
     has_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
     contact_form: /\b(?:contact form|contact us|send us a message)\b/,
     has_contact_form: /\b(?:contact form|contact us|send us a message)\b/,
     pricing_page: /\b(?:pricing|prices?|plans?)\b/,
     has_pricing: /\b(?:pricing|prices?|plans?)\b/,
-    ecommerce: /\b(?:online store|shop online|checkout|buy online|ecommerce)\b/,
+    ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b/,
+    has_ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b/,
+    lacks_ecommerce: /\b(?:no online store|does not sell online|doesn't sell online|online purchases? unavailable)\b/,
     online_payment: /\b(?:online payment|pay online|checkout|payment methods?)\b/,
+    has_online_payment: /\b(?:online payment|pay online|checkout|payment methods?)\b/,
     ssl: /\b(?:ssl|https|secure connection)\b/,
     whatsapp: /\b(?:whatsapp|wa me)\b/,
+    has_whatsapp: /\b(?:whatsapp|wa me)\b/,
+    has_social_presence: /\b(?:facebook|instagram|linkedin|youtube|tiktok|social media|x\.com)\b/,
+    appears_active: /\b(?:latest news|recently updated|updated on|copyright\s+20(?:2[4-9]|[3-9]\d))\b/,
+    appears_local_business: /\b(?:visit us|located in|our address|local (?:business|service)|serving [\p{L}\s]+(?:area|community|region))\b/u,
+    offers_multiple_services: /\b(?:services include|our services|we offer|solutions include)\b/,
+    has_outdated_website_signals: /\b(?:under construction|website coming soon|flash player|outdated website|copyright\s+(?:19|20(?:0\d|1\d)))\b/,
+    has_multilingual_site: /\b(?:multilingual|multiple languages|language selector|select language|english.{0,30}(?:español|spanish|français|deutsch)|(?:español|spanish|français|deutsch).{0,30}english)\b/,
     newsletter: /\b(?:newsletter|subscribe for updates)\b/,
     customer_login: /\b(?:log in|login|sign in)\b/,
     has_login: /\b(?:log in|login|sign in)\b/,
@@ -402,22 +414,23 @@ const evidenceFieldAliases: Record<string, string[]> = {
   "identity.legal_name": ["company.legal_name"],
   "identity.description": ["company.description"],
   "identity.industry": ["company.industry"],
-  "identity.business_model": ["company.customer_type"],
+  "identity.business_model": ["company.customer_type", "qualification_signals.appears_b2b", "qualification_signals.appears_b2c"],
   "identity.business_type": ["company.business_type"],
   "commercial.has_pricing": ["website_capabilities.pricing_page", "products.pricing_detected"],
   "conversion_signals.has_contact_form": ["contact.contact_form", "website_capabilities.contact_form"],
-  "conversion_signals.has_booking": ["website_capabilities.online_booking", "website_capabilities.appointment_system"],
+  "conversion_signals.has_booking": ["qualification_signals.has_online_booking", "signals.has_online_booking", "website_capabilities.online_booking", "website_capabilities.appointment_system"],
   "conversion_signals.has_newsletter": ["website_capabilities.newsletter"],
   "conversion_signals.has_login": ["website_capabilities.customer_login"],
-  "digital_capabilities.ecommerce": ["website_capabilities.ecommerce", "products.ecommerce_detected"],
-  "digital_capabilities.online_payment": ["website_capabilities.online_payment"],
-  "digital_capabilities.booking_system": ["website_capabilities.online_booking", "website_capabilities.appointment_system"],
+  "digital_capabilities.ecommerce": ["qualification_signals.has_ecommerce", "signals.has_ecommerce", "website_capabilities.ecommerce", "products.ecommerce_detected"],
+  "digital_capabilities.online_payment": ["qualification_signals.has_online_payment", "signals.has_online_payment", "website_capabilities.online_payment"],
+  "digital_capabilities.booking_system": ["qualification_signals.has_online_booking", "signals.has_online_booking", "website_capabilities.online_booking", "website_capabilities.appointment_system"],
   "digital_capabilities.search": ["website_capabilities.search"],
   "digital_capabilities.mobile_app": ["website_capabilities.mobile_app"],
   "signals.has_online_booking": ["qualification_signals.has_online_booking", "digital_capabilities.booking_system", "website_capabilities.online_booking", "website_capabilities.appointment_system"],
   "signals.has_contact_form": ["qualification_signals.has_contact_form", "conversion_signals.has_contact_form", "website_capabilities.contact_form", "contact.contact_form"],
   "signals.has_online_payment": ["qualification_signals.has_online_payment", "digital_capabilities.online_payment", "website_capabilities.online_payment"],
   "signals.has_ecommerce": ["qualification_signals.has_ecommerce", "digital_capabilities.ecommerce", "website_capabilities.ecommerce", "products.ecommerce_detected"],
+  "signals.has_whatsapp": ["qualification_signals.has_whatsapp", "website_capabilities.whatsapp", "contact.whatsapp"],
   "signals.appears_b2b": ["qualification_signals.appears_b2b", "company.customer_type", "identity.business_model"],
   "signals.appears_b2c": ["qualification_signals.appears_b2c", "company.customer_type", "identity.business_model"],
   "qualification.b2b": ["qualification_signals.appears_b2b", "qualification_signals.b2b"],
@@ -433,7 +446,9 @@ function evidenceFieldsForCanonicalPath(path: string): string[] {
     aliases.push(`${legacyCollection}.${index}.${property}`);
   }
   const signalMatch = /^signals\.([^.]+)$/.exec(path);
-  if (signalMatch) aliases.push(`qualification_signals.${signalMatch[1]}`);
+  if (signalMatch) {
+    aliases.push(`qualification_signals.${signalMatch[1]}`);
+  }
   return [path, ...aliases];
 }
 
@@ -545,10 +560,11 @@ function canonicalizeLegacyInput(
     nullableString(legacyCompany.business_type, "company.business_type", 120),
     "identity.business_type", evidence, fieldConfidence("company.business_type"),
   );
-  const bookingValue = nullableBoolean(legacyCapabilities.online_booking ?? legacyCapabilities.appointment_system, "website_capabilities.online_booking");
-  const contactFormValue = nullableBoolean(legacyContact.contact_form ?? legacyCapabilities.contact_form, "contact.contact_form");
-  const onlinePaymentValue = nullableBoolean(legacyCapabilities.online_payment, "website_capabilities.online_payment");
-  const ecommerceValue = nullableBoolean(legacyProducts.ecommerce_detected ?? legacyCapabilities.ecommerce, "products.ecommerce_detected");
+  const legacySignalValue = (name: string) => legacySignals.find((signal) => signal.signal === name)?.value ?? null;
+  const bookingValue = nullableBoolean(legacyCapabilities.online_booking ?? legacyCapabilities.appointment_system ?? legacySignalValue("has_online_booking"), "website_capabilities.online_booking");
+  const contactFormValue = nullableBoolean(legacyContact.contact_form ?? legacyCapabilities.contact_form ?? legacySignalValue("has_contact_form"), "contact.contact_form");
+  const onlinePaymentValue = nullableBoolean(legacyCapabilities.online_payment ?? legacySignalValue("has_online_payment"), "website_capabilities.online_payment");
+  const ecommerceValue = nullableBoolean(legacyProducts.ecommerce_detected ?? legacyCapabilities.ecommerce ?? legacySignalValue("has_ecommerce"), "products.ecommerce_detected");
   const searchValue = nullableBoolean(legacyCapabilities.search, "website_capabilities.search");
   const pricingValue = nullableBoolean(legacyProducts.pricing_detected ?? legacyCapabilities.pricing_page, "products.pricing_detected");
 
@@ -767,9 +783,16 @@ function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: nu
     source_page_type: item.source_page_type,
     reason: item.reason,
   }));
+  const verifiedServices = analysis.offerings.services.filter((item) => item.status !== "UNKNOWN");
+  const verifiedProducts = analysis.offerings.products.filter((item) => item.status !== "UNKNOWN");
 
   return {
     ...analysis,
+    offerings: {
+      ...analysis.offerings,
+      services: verifiedServices,
+      products: verifiedProducts,
+    },
     request: { ...analysis.request, pages_analyzed: pagesAnalyzed },
     analysis_quality: deriveAnalysisQuality(analysis, pagesAnalyzed),
     company: {
@@ -791,13 +814,9 @@ function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: nu
       contact_page: analysis.contact.contact_urls[0] ?? null,
       contact_form: contactForm,
     },
-    services: analysis.offerings.services
-      .filter((item) => item.status !== "UNKNOWN")
-      .map(({ name, description: serviceDescription }) => ({ name, description: serviceDescription })),
+    services: verifiedServices.map(({ name, description: serviceDescription }) => ({ name, description: serviceDescription })),
     products: {
-      items: analysis.offerings.products
-        .filter((item) => item.status !== "UNKNOWN")
-        .map(({ name, description: productDescription }) => ({ name, description: productDescription })),
+      items: verifiedProducts.map(({ name, description: productDescription }) => ({ name, description: productDescription })),
       categories: analysis.offerings.categories,
       pricing_detected: pricingPage,
       ecommerce_detected: ecommerce,
