@@ -771,17 +771,17 @@ function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: nu
         ? "B2C"
         : null;
   const evidenceLegacy = analysis.evidence.map((item) => ({
-    id: item.id,
+    ...(item.id ? { id: item.id } : {}),
     field: item.field,
     kind: item.status === "INFERENCE" || item.kind === "inference" ? "inference" as const : "fact" as const,
     url: item.source_url ?? item.url ?? "",
     excerpt: item.quote ?? item.excerpt ?? "",
     confidence: item.confidence,
-    status: item.status,
-    quote: item.quote,
-    source_url: item.source_url,
-    source_page_type: item.source_page_type,
-    reason: item.reason,
+    status: item.status ?? (item.kind === "inference" ? "INFERENCE" as const : "FACT" as const),
+    quote: item.quote ?? item.excerpt ?? "",
+    source_url: item.source_url ?? item.url ?? "",
+    source_page_type: item.source_page_type ?? "unknown",
+    reason: item.reason ?? "",
   }));
   const verifiedServices = analysis.offerings.services.filter((item) => item.status !== "UNKNOWN");
   const verifiedProducts = analysis.offerings.products.filter((item) => item.status !== "UNKNOWN");
