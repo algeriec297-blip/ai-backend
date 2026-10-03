@@ -196,6 +196,10 @@ function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
 export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: AbortSignal): Promise<{
   result: BusinessAnalysis;
   model: string;
@@ -344,9 +348,19 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
     throw new ApiError("INVALID_AI_RESPONSE", `Gemini output did not match the required business schema (${reason}).`);
   }
 
-  const inputTokens = payload?.usageMetadata?.promptTokenCount ?? 0;
-  const outputTokens = payload?.usageMetadata?.candidatesTokenCount ?? 0;
-  const totalTokens = payload?.usageMetadata?.totalTokenCount ?? inputTokens + outputTokens;
+  const inputTokens = tokenCount(payload?.usageMetadata?.promptTokenCount);
+  const outputTokens = tokenCount(payload?.usageMetadata?.candidatesTokenCount);
+  const totalTokens = tokenCount(payload?.usageMetadata?.totalTokenCount) || inputTokens + outputTokens;
+  const estimatedCostUsd = estimateGeminiCost(inputTokens, outputTokens);
+  if (inputTokens === 0 && outputTokens === 0) {
+    console.warn("Gemini response omitted token usage metadata", { model: appConfig.gemini.model });
+  }
+  result.usage = {
+    model: appConfig.gemini.model,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    estimated_ai_cost_usd: estimatedCostUsd,
+  };
   return {
     result,
     model: appConfig.gemini.model,
@@ -354,6 +368,6 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
     inputTokens,
     outputTokens,
     totalTokens,
-    estimatedCostUsd: estimateGeminiCost(inputTokens, outputTokens),
+    estimatedCostUsd,
   };
 }
