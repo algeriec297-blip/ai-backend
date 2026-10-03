@@ -130,6 +130,7 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   let principal: Awaited<ReturnType<typeof authenticateApiKey>> | undefined;
   let requestedUrl: string | null = null;
+  let failureStage = "request_body";
   try {
     const body = await readLimitedJson(request);
     if (typeof body !== "object" || body === null || !("url" in body)) {
@@ -137,9 +138,12 @@ export async function POST(request: Request) {
     }
     const url = normalizeUserUrl((body as { url: unknown }).url);
     requestedUrl = url.toString();
+    failureStage = "authentication";
     principal = await authenticateApiKey(request);
+    failureStage = "request_quota";
     await reserveRequest(principal.userId, principal.apiKeyId, principal.plan);
 
+    failureStage = "firebase_cache_read";
     const db = getAdminDb();
     const cacheId = createHash("sha256").update(url.toString()).digest("hex");
     const cacheRef = db.collection("analysisCache").doc(cacheId);
@@ -168,6 +172,7 @@ export async function POST(request: Request) {
         cache_hit: true,
       };
     } else {
+      failureStage = "website_and_gemini_analysis";
       const analysis = await analyzeWebsite(url);
       result = analysis.result as unknown as Record<string, unknown>;
       analysisMeta = {
@@ -179,6 +184,7 @@ export async function POST(request: Request) {
         estimated_cost_usd: analysis.estimatedCostUsd,
         cache_hit: false,
       };
+      failureStage = "firebase_cache_write";
       await cacheRef.set({
         url: url.toString(), result, analysisMeta,
         expiresAtMs: Date.now() + appConfig.analysis.cacheTtlSeconds * 1000,
@@ -189,9 +195,11 @@ export async function POST(request: Request) {
 
     const id = randomUUID();
     const analysisRecord = { ...result, id, url: url.toString(), analyzed_at: new Date().toISOString(), analysis_meta: analysisMeta };
+    failureStage = "firebase_analysis_write";
     await db.collection("analyses").doc(id).set({
       ...analysisRecord, userId: principal.userId, apiKeyId: principal.apiKeyId, createdAt: FieldValue.serverTimestamp(),
     });
+    failureStage = "usage_record";
     await recordUsage({
       principal,
       url: url.toString(),
@@ -204,8 +212,10 @@ export async function POST(request: Request) {
       cacheHit,
       model: typeof analysisMeta.model === "string" ? analysisMeta.model : undefined,
     });
+    failureStage = "response";
     return Response.json(analysisRecord);
   } catch (error) {
+    const requestDomain = requestedUrl ? new URL(requestedUrl).hostname : null;
     if (principal) {
       try {
         await recordUsage({
@@ -216,9 +226,18 @@ export async function POST(request: Request) {
           statusCode: error instanceof ApiError ? error.status : 500,
         });
       } catch {
-        console.error("Unable to record failed API usage", { endpoint: "/api/v1/analyze" });
+        console.error("Unable to record failed API usage", {
+          endpoint: "/api/v1/analyze",
+          failureStage,
+          requestDomain,
+        });
       }
     }
-    return errorResponse(error);
+    return errorResponse(error, {
+      endpoint: "/api/v1/analyze",
+      failureStage,
+      requestDomain,
+      elapsedMs: Date.now() - startedAt,
+    });
   }
 }
