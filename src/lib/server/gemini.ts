@@ -271,7 +271,7 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
   return {
     result,
     model: appConfig.gemini.model,
-    pagesAnalyzed: pages.length,
+    pagesAnalyzed: result.request.pages_analyzed,
     inputTokens,
     outputTokens,
     totalTokens,
