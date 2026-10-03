@@ -149,7 +149,16 @@ export async function POST(request: Request) {
     let analysisMeta: Record<string, unknown>;
 
     if (cacheHit) {
-      result = cacheSnapshot.get("result") as Record<string, unknown>;
+      result = { ...(cacheSnapshot.get("result") as Record<string, unknown>) };
+      const cachedUsage = result.usage;
+      if (cachedUsage && typeof cachedUsage === "object" && !Array.isArray(cachedUsage)) {
+        result.usage = {
+          ...(cachedUsage as Record<string, unknown>),
+          input_tokens: 0,
+          output_tokens: 0,
+          estimated_ai_cost_usd: 0,
+        };
+      }
       analysisMeta = {
         ...(cacheSnapshot.get("analysisMeta") as Record<string, unknown>),
         input_tokens: 0,
