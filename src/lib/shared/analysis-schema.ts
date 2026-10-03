@@ -407,14 +407,31 @@ function record(value: unknown, field: string): Record<string, unknown> {
 }
 
 function normalizeEvidenceText(value: string): string {
-  return value
-    .normalize("NFKD")
-    .replace(/\p{M}/gu, "")
-    .toLowerCase()
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim()
-    .replace(/\s+/g, " ");
+  const decoded = value.replace(/&(#(?:x[\da-f]+|\d+)|amp|lt|gt|quot|apos|nbsp);/gi, (entity, name: string) => {
+    if (name[0] === "#") {
+      const codePoint = name[1]?.toLowerCase() === "x"
+        ? Number.parseInt(name.slice(2), 16)
+        : Number.parseInt(name.slice(1), 10);
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    }
+    const namedEntities: Record<string, string> = {
+      amp: "&",
+      apos: "'",
+      gt: ">",
+      lt: "<",
+      nbsp: " ",
+      quot: '"',
+    };
+    return namedEntities[name.toLowerCase()] ?? entity;
+  });
+  return decoded.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function evidenceMatchesSource(pageText: string, excerpt: string): boolean {
+  const normalizedExcerpt = normalizeEvidenceText(excerpt);
+  return normalizedExcerpt.length > 0 && normalizeEvidenceText(pageText).includes(normalizedExcerpt);
 }
 
 function analyzeStatus(value: unknown): AnalysisStatus {
@@ -510,24 +527,25 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       throw new Error("Invalid analysis arrays");
     }
 
-    const normalizedEvidence: Evidence[] = evidence.slice(0, 120).map((item) => {
-      const source = record(item, "evidence item");
-      if (source.kind !== "fact" && source.kind !== "inference") throw new Error("Invalid evidence kind");
-      const url = nullableString(source.url, "evidence.url", 2048);
-      if (!url || !sourceTextByUrl.has(url)) throw new Error("Evidence references an unfetched page");
-      const excerpt = nullableString(source.excerpt, "evidence.excerpt", 500) ?? "";
-      const pageText = sourceTextByUrl.get(url) ?? "";
-      if (!excerpt || !pageText.includes(excerpt)) {
-        throw new Error("Evidence excerpt does not appear in the source page");
-      }
-      return {
-        field: nullableString(source.field, "evidence.field", 120) ?? "unknown",
-        kind: source.kind as EvidenceKind,
+    const normalizedEvidence: Evidence[] = evidence.slice(0, 120).flatMap((item) => {
+      if (!isRecord(item) || (item.kind !== "fact" && item.kind !== "inference")) return [];
+      if (typeof item.url !== "string" || typeof item.excerpt !== "string") return [];
+      const url = item.url.trim().slice(0, 2048);
+      const excerpt = item.excerpt.trim().slice(0, 500);
+      const pageText = sourceTextByUrl.get(url);
+      if (!url || pageText === undefined || !evidenceMatchesSource(pageText, excerpt)) return [];
+      const field = typeof item.field === "string" ? item.field.trim().slice(0, 120) : "unknown";
+      if (!field || !evidenceSupportsClaim(root, field, excerpt)) return [];
+      if (item.confidence !== null && (typeof item.confidence !== "number"
+        || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) return [];
+      return [{
+        field,
+        kind: item.kind as EvidenceKind,
         url,
         excerpt,
-        confidence: normalizeConfidence(source.confidence, "evidence.confidence", source.kind === "fact" ? "FACT" : "INFERENCE", 1),
-      };
-    }).filter((item) => evidenceSupportsClaim(root, item.field, item.excerpt));
+        confidence: normalizeConfidence(item.confidence, "evidence.confidence", item.kind === "fact" ? "FACT" : "INFERENCE", 1),
+      }];
+    });
 
     const normalizedSignals: QualificationSignal[] = signals.slice(0, 50).map((item) => {
       const signal = record(item, "signal");
@@ -742,7 +760,8 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
   const websiteCapabilitiesRoot = isRecord(root.website_capabilities) ? record(root.website_capabilities, "website_capabilities") : {};
   const normalizedEvidence: BusinessAnalysis["evidence"] = Array.isArray(root.evidence)
     ? root.evidence.slice(0, 120).flatMap((item) => {
-      const evidenceItem = record(item, "evidence.item");
+      try {
+        const evidenceItem = record(item, "evidence.item");
       const sourceUrl = nullableString(evidenceItem.source_url ?? null, "evidence.source_url", 2048);
       const quote = nullableString(evidenceItem.quote ?? null, "evidence.quote", 500) ?? "";
       const field = nullableString(evidenceItem.field ?? null, "evidence.field", 120) ?? "unknown";
@@ -750,7 +769,7 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       const pageText = sourceTextByUrl.get(sourceUrl ?? "") ?? "";
       const id = nullableString(evidenceItem.id ?? null, "evidence.id", 50);
       if (!id || status === "UNKNOWN" || !sourceUrl || !sourceTextByUrl.has(sourceUrl) || !quote
-        || !pageText.includes(quote)
+        || !evidenceMatchesSource(pageText, quote)
         || !evidenceSupportsClaim(root, field, quote)) return [];
       return [{
         id,
@@ -762,6 +781,9 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
         source_page_type: nullableString(evidenceItem.source_page_type ?? null, "evidence.source_page_type", 100) ?? "unknown",
         reason: nullableString(evidenceItem.reason ?? null, "evidence.reason", 500) ?? "",
       }];
+      } catch {
+        return [];
+      }
     })
     : [];
 
