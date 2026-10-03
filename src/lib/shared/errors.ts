@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export type ApiErrorCode =
   | "INVALID_URL"
   | "UNSAFE_URL"
@@ -81,15 +83,27 @@ export function safeErrorDetails(error: unknown): {
   };
 }
 
-export function errorResponse(error: unknown): Response {
+export function errorResponse(
+  error: unknown,
+  context: Record<string, string | number | null> = {},
+): Response {
   const apiError = error instanceof ApiError
     ? error
     : new ApiError("INTERNAL_ERROR", "An unexpected error occurred.");
 
   if (apiError.status >= 500) {
-    console.error("API request failed", error instanceof ApiError
-      ? { code: apiError.code }
-      : { code: apiError.code, ...safeErrorDetails(error) });
+    const referenceId = randomUUID();
+    console.error("API request failed", {
+      referenceId,
+      ...context,
+      code: apiError.code,
+      ...(error instanceof ApiError ? {} : safeErrorDetails(error)),
+    });
+    if (!(error instanceof ApiError)) {
+      return Response.json({
+        error: { code: apiError.code, message: apiError.message, reference_id: referenceId },
+      }, { status: apiError.status });
+    }
   }
   return Response.json({ error: { code: apiError.code, message: apiError.message } }, { status: apiError.status });
 }
