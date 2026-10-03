@@ -36,93 +36,7 @@ const objectSchema = (properties: Record<string, GeminiSchema>): GeminiSchema =>
   required: Object.keys(properties),
 });
 
-function toJsonSchema(schema: GeminiSchema): Record<string, unknown> {
-  const { type, nullable, properties, items, additionalProperties, ...rest } = schema;
-  const converted: Record<string, unknown> = { ...rest };
-  if (type) converted.type = type.toLowerCase();
-  if (properties) {
-    converted.properties = Object.fromEntries(
-      Object.entries(properties).map(([key, value]) => [key, toJsonSchema(value)]),
-    );
-  }
-  if (items) converted.items = toJsonSchema(items);
-  if (typeof additionalProperties === "object") {
-    converted.additionalProperties = toJsonSchema(additionalProperties);
-  } else if (additionalProperties !== undefined) {
-    converted.additionalProperties = additionalProperties;
-  }
-  if (nullable) return { anyOf: [converted, { type: "null" }] };
-  return converted;
-}
-
 const businessSchema = objectSchema({
-  schema_version: { type: "STRING", nullable: true },
-  request: objectSchema({
-    input_url: { type: "STRING" }, canonical_url: { type: "STRING" }, domain: { type: "STRING" },
-    analyzed_at: { type: "STRING" }, pages_analyzed: { type: "INTEGER" }, analysis_duration_ms: { type: "INTEGER" },
-  }),
-  identity: objectSchema({
-    company_name: objectSchema({ value: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    legal_name: objectSchema({ value: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    description: objectSchema({ value: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    industry: objectSchema({ value: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    business_model: objectSchema({ value: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    business_type: objectSchema({ value: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-  }),
-  market: objectSchema({
-    customer_segments: stringArray, target_audience: stringArray, geographic_markets: stringArray,
-    languages: stringArray, industries_served: stringArray, company_size_focus: stringArray,
-  }),
-  offerings: objectSchema({
-    services: { type: "ARRAY", items: objectSchema({ name: { type: "STRING" }, description: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }) },
-    products: { type: "ARRAY", items: objectSchema({ name: { type: "STRING" }, description: nullableString, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }) },
-    solutions: stringArray, categories: stringArray, primary_offerings: stringArray,
-  }),
-  commercial: objectSchema({
-    has_pricing: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    pricing_model: stringArray, price_range: nullableString,
-    has_free_trial: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_demo: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_subscription: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_online_purchase: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-  }),
-  conversion_signals: objectSchema({
-    has_contact_form: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_sales_cta: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_demo_cta: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_signup: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_login: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_newsletter: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_booking: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_quote_request: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    has_downloadable_material: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-  }),
-  digital_capabilities: objectSchema({
-    ecommerce: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    online_payment: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    customer_portal: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    account_creation: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    booking_system: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    search: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    api: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    documentation: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    developer_platform: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    mobile_app: objectSchema({ value: nullableBoolean, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray }),
-    integrations: stringArray, technologies_detected: stringArray,
-  }),
-  contact: objectSchema({
-    emails: stringArray, phones: stringArray, addresses: stringArray, contact_urls: stringArray,
-    sales_urls: stringArray, support_urls: stringArray,
-  }),
-  social: objectSchema({
-    linkedin: nullableString, facebook: nullableString, instagram: nullableString, x: nullableString,
-    youtube: nullableString, github: nullableString, other: stringArray,
-  }),
-  qualification: objectSchema({
-    b2b: nullableBoolean, b2c: nullableBoolean, b2b2c: nullableBoolean, enterprise_focus: nullableBoolean,
-    smb_focus: nullableBoolean, lead_capture: nullableBoolean, sales_led: nullableBoolean, self_service: nullableBoolean,
-    recurring_revenue_signal: nullableBoolean, transactional_revenue_signal: nullableBoolean, business_maturity: nullableString,
-  }),
   company: objectSchema({
     company_name: nullableString, legal_name: nullableString, description: nullableString,
     industry: nullableString, sub_industry: nullableString, business_type: nullableString,
@@ -130,7 +44,7 @@ const businessSchema = objectSchema({
     languages: stringArray, target_market: nullableString,
     customer_type: { type: "STRING", nullable: true, enum: ["B2B", "B2C", "Both"] },
   }),
-  contact_legacy: objectSchema({
+  contact: objectSchema({
     email: nullableString, phone: nullableString, whatsapp: nullableString,
     contact_page: nullableString, contact_form: nullableBoolean,
   }),
@@ -158,29 +72,21 @@ const businessSchema = objectSchema({
       evidence: { type: "ARRAY", items: objectSchema({ url: { type: "STRING" }, reason: { type: "STRING" } }) },
     }),
   },
-  signals: {
-    type: "ARRAY",
-    items: objectSchema({
-      id: { type: "STRING" }, type: { type: "STRING" }, value: nullableBoolean,
-      status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] }, confidence: { type: "NUMBER" }, evidence_ids: stringArray,
-    }),
-  },
   evidence: {
     type: "ARRAY",
     items: objectSchema({
-      id: { type: "STRING" }, field: { type: "STRING" }, status: { type: "STRING", enum: ["FACT", "INFERENCE", "UNKNOWN"] },
-      confidence: { type: "NUMBER" }, quote: { type: "STRING" }, source_url: { type: "STRING" }, source_page_type: { type: "STRING" }, reason: { type: "STRING" },
+      field: { type: "STRING" },
+      kind: { type: "STRING", enum: ["fact", "inference"] },
+      url: { type: "STRING" },
+      excerpt: { type: "STRING" },
+      confidence: { type: "NUMBER", nullable: true },
     }),
   },
-  unknowns: { type: "ARRAY", items: objectSchema({ field: { type: "STRING" }, reason: { type: "STRING" } }) },
-  analysis_quality: objectSchema({
-    overall_confidence: { type: "NUMBER" }, coverage_score: { type: "NUMBER" }, evidence_coverage: { type: "NUMBER" },
-    pages_successfully_read: { type: "INTEGER" }, pages_failed: { type: "INTEGER" }, warnings: stringArray,
+  confidence_by_field: objectSchema({
+    "company.company_name": { type: "NUMBER", nullable: true },
+    "company.industry": { type: "NUMBER", nullable: true },
+    "company.description": { type: "NUMBER", nullable: true },
   }),
-  usage: objectSchema({
-    model: { type: "STRING" }, input_tokens: { type: "INTEGER" }, output_tokens: { type: "INTEGER" }, estimated_ai_cost_usd: { type: "NUMBER" },
-  }),
-  confidence_by_field: { type: "OBJECT", properties: {}, additionalProperties: { type: "NUMBER", nullable: true } },
 });
 
 function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -244,7 +150,7 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
     endpoint.searchParams.set("key", apiKey);
     const requestBody = JSON.stringify({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: "application/json", responseJsonSchema: toJsonSchema(businessSchema) },
+      generationConfig: { responseMimeType: "application/json", responseSchema: businessSchema },
     });
     for (let attempt = 0; attempt <= 4; attempt += 1) {
       response = await fetch(endpoint, {
