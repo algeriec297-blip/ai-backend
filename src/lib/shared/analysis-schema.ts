@@ -259,9 +259,142 @@ function confidence(value: unknown, field: string): number | null {
 function normalizeConfidence(value: unknown, field: string, status: AnalysisStatus, evidenceCount = 0): number {
   const base = confidence(value, field) ?? 0;
   if (status === "UNKNOWN" || evidenceCount === 0) return 0;
-  if (status === "FACT") return Math.min(Math.max(base, 0.05), 0.98);
-  if (status === "INFERENCE") return Math.min(Math.max(base, 0.05), 0.8);
+  if (status === "FACT") return Math.min(base, 0.98);
+  if (status === "INFERENCE") return Math.min(base, 0.8);
   return 0;
+}
+
+function evidenceClaimValue(root: Record<string, unknown>, field: string): unknown {
+  const parts = field.split(".").filter(Boolean);
+  let current: unknown = root;
+  for (const part of parts) {
+    if (Array.isArray(current)) {
+      if (/^\d+$/.test(part)) {
+        current = current[Number(part)];
+        continue;
+      }
+      const match = current.find((item) => isRecord(item)
+        && [item.signal, item.type, item.id].some((candidate) => candidate === part));
+      current = match;
+      continue;
+    }
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+  if (isRecord(current) && "value" in current) return current.value;
+  if (current !== undefined) return current;
+
+  const key = parts.at(-1);
+  if (key && isRecord(root.company) && key in root.company) return root.company[key];
+  if (key && isRecord(root.website_capabilities) && key in root.website_capabilities) return root.website_capabilities[key];
+  return undefined;
+}
+
+function evidenceAnchor(field: string): RegExp | null {
+  const key = field.split(".").at(-1)?.toLowerCase() ?? "";
+  const rules: Record<string, RegExp> = {
+    mobile_friendly: /\b(?:mobile[- ]friendly|responsive (?:design|layout|website|site)|optimized for mobile|mobile optimized|designed for mobile)\b/,
+    has_mobile_optimization: /\b(?:mobile[- ]friendly|responsive (?:design|layout|website|site)|optimized for mobile|mobile optimized|designed for mobile)\b/,
+    appears_b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b/,
+    b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b/,
+    appears_b2c: /\b(?:b2c|consumer(?:s)?|individuals|households|personal use)\b/,
+    online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
+    booking_system: /\b(?:book(?:ing)?|appointment|schedule)\b/,
+    has_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
+    contact_form: /\b(?:contact form|contact us|send us a message)\b/,
+    has_contact_form: /\b(?:contact form|contact us|send us a message)\b/,
+    pricing_page: /\b(?:pricing|prices?|plans?)\b/,
+    has_pricing: /\b(?:pricing|prices?|plans?)\b/,
+    ecommerce: /\b(?:online store|shop online|checkout|buy online|ecommerce)\b/,
+    online_payment: /\b(?:online payment|pay online|checkout|payment methods?)\b/,
+    ssl: /\b(?:ssl|https|secure connection)\b/,
+    whatsapp: /\b(?:whatsapp|wa me)\b/,
+    newsletter: /\b(?:newsletter|subscribe for updates)\b/,
+    customer_login: /\b(?:log in|login|sign in)\b/,
+    has_login: /\b(?:log in|login|sign in)\b/,
+    has_signup: /\b(?:sign up|create an account|register)\b/,
+    has_demo: /\b(?:request a demo|book a demo|product demo)\b/,
+    has_free_trial: /\bfree trial\b/,
+    blog: /\b(?:blog|articles|latest posts)\b/,
+    search: /\b(?:search|search for)\b/,
+    has_physical_location: /\b(?:visit us|our address|located in|physical location)\b/,
+  };
+  if (key === "address") return /\b\d+\s+[\p{L}\p{N}.'-]+(?:\s+[\p{L}\p{N}.'-]+){0,3}\s+(?:street|st|road|rd|avenue|ave|boulevard|blvd|lane|ln|drive|dr)\b/u;
+  return rules[key] ?? null;
+}
+
+function evidenceSupportsClaim(root: Record<string, unknown>, field: string, quote: string): boolean {
+  const normalizedQuote = normalizeEvidenceText(quote);
+  if (!normalizedQuote) return false;
+  const claimValue = evidenceClaimValue(root, field);
+  if (typeof claimValue === "string" && claimValue.trim()) {
+    return normalizedQuote.includes(normalizeEvidenceText(claimValue));
+  }
+
+  const key = field.split(".").at(-1)?.toLowerCase();
+  if ((key === "mobile_friendly" || key === "has_mobile_optimization") && typeof claimValue === "boolean") {
+    const positiveEvidence = /\b(?:mobile friendly|responsive (?:design|layout|website|site)|optimized for mobile|mobile optimized|designed for mobile)\b/;
+    const negativeEvidence = /\b(?:desktop only|not mobile friendly|not responsive|no mobile support|not optimized for mobile)\b/;
+    return claimValue ? positiveEvidence.test(normalizedQuote) && !negativeEvidence.test(normalizedQuote)
+      : negativeEvidence.test(normalizedQuote);
+  }
+
+  const anchor = evidenceAnchor(field);
+  if (!anchor || !anchor.test(normalizedQuote)) return false;
+  if (typeof claimValue !== "boolean") return true;
+  if (claimValue) return true;
+
+  const matchedText = normalizedQuote.match(anchor)?.[0];
+  if (!matchedText) return false;
+  const index = normalizedQuote.indexOf(matchedText);
+  const surroundingText = normalizedQuote.slice(Math.max(0, index - 40), index + matchedText.length + 40);
+  return /\b(?:no|not|without|does not|doesn't|unavailable|unsupported)\b/.test(surroundingText);
+}
+
+function normalizeLinkedClaims(value: unknown, evidence: BusinessAnalysis["evidence"], path = ""): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item, index) => normalizeLinkedClaims(item, evidence, `${path}.${index}`));
+  }
+  if (!isRecord(value)) return value;
+
+  if (typeof value.status === "string" && Array.isArray(value.evidence_ids)) {
+    const evidenceIds = value.evidence_ids.map(String);
+    const pathParts = path.split(".");
+    const lastPathPart = pathParts.at(-1);
+    const fieldPaths = path.startsWith("signals.") && typeof value.type === "string"
+      ? [`signals.${value.type}`]
+      : lastPathPart && /^\d+$/.test(lastPathPart)
+        ? [`${path}.name`, `${path}.description`]
+        : [path];
+    const linkedEvidence = evidence.filter((item) => item.id && evidenceIds.includes(item.id)
+      && fieldPaths.includes(item.field));
+    if (!linkedEvidence.length) {
+      return {
+        ...value,
+        ...( "value" in value ? { value: null } : {}),
+        ...( "name" in value ? { name: "Unknown" } : {}),
+        ...( "description" in value ? { description: null } : {}),
+        status: "UNKNOWN",
+        confidence: 0,
+        evidence_ids: [],
+      };
+    }
+    const status = value.status === "INFERENCE" || linkedEvidence.some((item) => item.status === "INFERENCE")
+      ? "INFERENCE"
+      : value.status === "FACT" ? "FACT" : "UNKNOWN";
+    return {
+      ...value,
+      value: status === "UNKNOWN" ? null : value.value,
+      status,
+      confidence: normalizeConfidence(value.confidence, `${path}.confidence`, status, linkedEvidence.length),
+      evidence_ids: linkedEvidence.map((item) => item.id),
+    };
+  }
+
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+    key,
+    normalizeLinkedClaims(entry, evidence, path ? `${path}.${key}` : key),
+  ]));
 }
 
 function safeStringArray(value: unknown, field: string, maxItems = 40): string[] {
@@ -384,38 +517,54 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       if (!url || !sourceTextByUrl.has(url)) throw new Error("Evidence references an unfetched page");
       const excerpt = nullableString(source.excerpt, "evidence.excerpt", 500) ?? "";
       const pageText = sourceTextByUrl.get(url) ?? "";
-      if (!excerpt || !normalizeEvidenceText(pageText).includes(normalizeEvidenceText(excerpt))) {
+      if (!excerpt || !pageText.includes(excerpt)) {
         throw new Error("Evidence excerpt does not appear in the source page");
       }
       return {
         field: nullableString(source.field, "evidence.field", 120) ?? "unknown",
-        kind: source.kind,
+        kind: source.kind as EvidenceKind,
         url,
         excerpt,
-        confidence: confidence(source.confidence, "evidence.confidence"),
+        confidence: normalizeConfidence(source.confidence, "evidence.confidence", source.kind === "fact" ? "FACT" : "INFERENCE", 1),
       };
-    });
+    }).filter((item) => evidenceSupportsClaim(root, item.field, item.excerpt));
 
     const normalizedSignals: QualificationSignal[] = signals.slice(0, 50).map((item) => {
       const signal = record(item, "signal");
       if (!Array.isArray(signal.evidence)) throw new Error("Invalid signal evidence");
+      const signalName = nullableString(signal.signal, "signal.name", 100) ?? "unknown";
+      const signalValue = nullableBoolean(signal.value, "signal.value");
+      const validEvidence = signal.evidence.slice(0, 20).flatMap((source) => {
+        const sourceRecord = record(source, "signal evidence item");
+        const url = nullableString(sourceRecord.url, "signal evidence.url", 2048);
+        const reason = nullableString(sourceRecord.reason, "signal evidence.reason", 500) ?? "";
+        const pageText = sourceTextByUrl.get(url ?? "") ?? "";
+        if (!url || !sourceTextByUrl.has(url) || !reason
+          || !evidenceSupportsClaim({ [signalName]: { value: signalValue } }, signalName, reason)
+          || !evidenceSupportsClaim({ [signalName]: { value: signalValue } }, signalName, pageText)) return [];
+        return [{ url, reason }];
+      });
+      const directEvidence = validEvidence.some(({ url, reason }) =>
+        normalizeEvidenceText(sourceTextByUrl.get(url) ?? "").includes(normalizeEvidenceText(reason)));
       return {
-        signal: nullableString(signal.signal, "signal.name", 100) ?? "unknown",
-        value: nullableBoolean(signal.value, "signal.value"),
-        confidence: confidence(signal.confidence, "signal.confidence"),
-        evidence: signal.evidence.slice(0, 20).map((source) => {
-          const sourceRecord = record(source, "signal evidence item");
-          const url = nullableString(sourceRecord.url, "signal evidence.url", 2048);
-          if (!url || !sourceTextByUrl.has(url)) throw new Error("Signal references an unfetched page");
-          return { url, reason: nullableString(sourceRecord.reason, "signal evidence.reason", 500) ?? "" };
-        }),
+        signal: signalName,
+        value: validEvidence.length ? signalValue : null,
+        confidence: normalizeConfidence(signal.confidence, "signal.confidence", validEvidence.length ? (directEvidence ? "FACT" : "INFERENCE") : "UNKNOWN", validEvidence.length),
+        evidence: validEvidence,
       };
     });
 
     const confidenceMap = record(root.confidence_by_field, "confidence_by_field");
     const safeConfidenceMap: Record<string, number | null> = {};
     for (const [field, value] of Object.entries(confidenceMap).slice(0, 100)) {
-      safeConfidenceMap[field.slice(0, 120)] = confidence(value, `confidence_by_field.${field}`);
+      const matchingEvidence = normalizedEvidence.find((item) =>
+        item.field === field || item.field.split(".").at(-1) === field.split(".").at(-1));
+      safeConfidenceMap[field.slice(0, 120)] = normalizeConfidence(
+        value,
+        `confidence_by_field.${field}`,
+        matchingEvidence?.kind === "fact" ? "FACT" : matchingEvidence ? "INFERENCE" : "UNKNOWN",
+        matchingEvidence ? 1 : 0,
+      );
     }
 
     const normalizedServices = services.slice(0, 40).map((item) => {
@@ -564,7 +713,9 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
         customer_login: nullableBoolean(capabilities.customer_login, "customer_login"),
         multilingual_support: nullableBoolean(capabilities.multilingual_support, "multilingual_support"),
         ssl: nullableBoolean(capabilities.ssl, "ssl"),
-        mobile_friendly: nullableBoolean(capabilities.mobile_friendly, "mobile_friendly"),
+        mobile_friendly: normalizedEvidence.some((item) => item.field.split(".").at(-1) === "mobile_friendly")
+          ? nullableBoolean(capabilities.mobile_friendly, "mobile_friendly")
+          : null,
         search: nullableBoolean(capabilities.search, "search"),
         blog: nullableBoolean(capabilities.blog, "blog"),
         pricing_page: nullableBoolean(capabilities.pricing_page, "pricing_page"),
@@ -589,6 +740,30 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
   const contactRoot = isRecord(root.contact) ? record(root.contact, "contact") : {};
   const productsRoot = isRecord(root.products) ? record(root.products, "products") : {};
   const websiteCapabilitiesRoot = isRecord(root.website_capabilities) ? record(root.website_capabilities, "website_capabilities") : {};
+  const normalizedEvidence: BusinessAnalysis["evidence"] = Array.isArray(root.evidence)
+    ? root.evidence.slice(0, 120).flatMap((item) => {
+      const evidenceItem = record(item, "evidence.item");
+      const sourceUrl = nullableString(evidenceItem.source_url ?? null, "evidence.source_url", 2048);
+      const quote = nullableString(evidenceItem.quote ?? null, "evidence.quote", 500) ?? "";
+      const field = nullableString(evidenceItem.field ?? null, "evidence.field", 120) ?? "unknown";
+      const status = analyzeStatus(evidenceItem.status ?? evidenceItem.kind ?? "UNKNOWN");
+      const pageText = sourceTextByUrl.get(sourceUrl ?? "") ?? "";
+      const id = nullableString(evidenceItem.id ?? null, "evidence.id", 50);
+      if (!id || status === "UNKNOWN" || !sourceUrl || !sourceTextByUrl.has(sourceUrl) || !quote
+        || !pageText.includes(quote)
+        || !evidenceSupportsClaim(root, field, quote)) return [];
+      return [{
+        id,
+        field,
+        status,
+        confidence: normalizeConfidence(evidenceItem.confidence, "evidence.confidence", status, 1),
+        quote,
+        source_url: sourceUrl,
+        source_page_type: nullableString(evidenceItem.source_page_type ?? null, "evidence.source_page_type", 100) ?? "unknown",
+        reason: nullableString(evidenceItem.reason ?? null, "evidence.reason", 500) ?? "",
+      }];
+    })
+    : [];
 
   const team: BusinessAnalysis = {
     schema_version: nullableString(root.schema_version, "schema_version", 20) ?? "1.0",
@@ -708,38 +883,22 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
     signals: Array.isArray(root.signals) ? root.signals.slice(0, 40).map((item) => {
       const signal = record(item, "signals.item");
       const id = nullableString(signal.id ?? null, "signals.id", 100) ?? `sig_${Math.random().toString(36).slice(2, 8)}`;
-      const normalizedStatus = signal.status === "FACT" || signal.status === "INFERENCE" || signal.status === "UNKNOWN" ? signal.status : "UNKNOWN";
-      const evidenceIds = Array.isArray(signal.evidence_ids) ? signal.evidence_ids.map((entry) => String(entry)).slice(0, 20) : [];
+      const requestedStatus = signal.status === "FACT" || signal.status === "INFERENCE" || signal.status === "UNKNOWN" ? signal.status : "UNKNOWN";
+      const requestedEvidenceIds = Array.isArray(signal.evidence_ids) ? signal.evidence_ids.map((entry) => String(entry)).slice(0, 20) : [];
+      const field = nullableString(signal.type ?? null, "signals.type", 100) ?? "unknown";
+      const validEvidenceIds = requestedEvidenceIds.filter((evidenceId) => normalizedEvidence.some((entry) =>
+        entry.id === evidenceId && entry.field === `signals.${field}`));
+      const normalizedStatus = validEvidenceIds.length ? requestedStatus : "UNKNOWN";
       return {
         id,
-        type: nullableString(signal.type ?? null, "signals.type", 100) ?? "unknown",
-        value: signal.value === null || typeof signal.value === "boolean" ? signal.value : null,
+        type: field,
+        value: normalizedStatus === "UNKNOWN" || (signal.value !== null && typeof signal.value !== "boolean") ? null : signal.value,
         status: normalizedStatus,
-        confidence: normalizeConfidence(signal.confidence, "signals.confidence", normalizedStatus, evidenceIds.length),
-        evidence_ids: evidenceIds,
+        confidence: normalizeConfidence(signal.confidence, "signals.confidence", normalizedStatus, validEvidenceIds.length),
+        evidence_ids: validEvidenceIds,
       };
     }) : [],
-    evidence: Array.isArray(root.evidence) ? root.evidence.slice(0, 120).map((item) => {
-      const evidenceItem = record(item, "evidence.item");
-      const sourceUrl = nullableString(evidenceItem.source_url ?? null, "evidence.source_url", 2048);
-      if (sourceUrl && !sourceTextByUrl.has(sourceUrl)) throw new Error("Evidence references an unfetched page");
-      const quote = nullableString(evidenceItem.quote ?? null, "evidence.quote", 500) ?? "";
-      const pageText = sourceTextByUrl.get(sourceUrl ?? "") ?? "";
-      if (sourceUrl && quote && !normalizeEvidenceText(pageText).includes(normalizeEvidenceText(quote))) {
-        throw new Error("Evidence excerpt does not appear in the source page");
-      }
-      const status = analyzeStatus(evidenceItem.status ?? evidenceItem.kind ?? "UNKNOWN");
-      return {
-        id: nullableString(evidenceItem.id ?? null, "evidence.id", 50) ?? "ev_unknown",
-        field: nullableString(evidenceItem.field ?? null, "evidence.field", 120) ?? "unknown",
-        status,
-        confidence: normalizeConfidence(evidenceItem.confidence, "evidence.confidence", status, sourceUrl ? 1 : 0),
-        quote,
-        source_url: sourceUrl ?? "",
-        source_page_type: nullableString(evidenceItem.source_page_type ?? null, "evidence.source_page_type", 100) ?? "unknown",
-        reason: nullableString(evidenceItem.reason ?? null, "evidence.reason", 500) ?? "",
-      };
-    }) : [],
+    evidence: normalizedEvidence,
     unknowns: Array.isArray(root.unknowns) ? root.unknowns.slice(0, 50).map((item) => {
       const unknownItem = record(item, "unknowns.item");
       return {
@@ -748,7 +907,7 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       };
     }) : [],
     analysis_quality: {
-      overall_confidence: confidence(analysisQuality.overall_confidence, "analysis_quality.overall_confidence") ?? 0,
+      overall_confidence: Math.min(confidence(analysisQuality.overall_confidence, "analysis_quality.overall_confidence") ?? 0, 0.98),
       coverage_score: confidence(analysisQuality.coverage_score, "analysis_quality.coverage_score") ?? 0,
       evidence_coverage: confidence(analysisQuality.evidence_coverage, "analysis_quality.evidence_coverage") ?? 0,
       pages_successfully_read: Number.isFinite(Number(analysisQuality.pages_successfully_read)) ? Number(analysisQuality.pages_successfully_read) : 0,
@@ -809,45 +968,45 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       customer_login: nullableBoolean(websiteCapabilitiesRoot.customer_login, "customer_login"),
       multilingual_support: nullableBoolean(websiteCapabilitiesRoot.multilingual_support, "multilingual_support"),
       ssl: nullableBoolean(websiteCapabilitiesRoot.ssl, "ssl"),
-      mobile_friendly: nullableBoolean(websiteCapabilitiesRoot.mobile_friendly, "mobile_friendly"),
+      mobile_friendly: normalizedEvidence.some((item) => item.field === "website_capabilities.mobile_friendly")
+        ? nullableBoolean(websiteCapabilitiesRoot.mobile_friendly, "mobile_friendly")
+        : null,
       search: nullableBoolean(websiteCapabilitiesRoot.search, "search"),
       blog: nullableBoolean(websiteCapabilitiesRoot.blog, "blog"),
       pricing_page: nullableBoolean(websiteCapabilitiesRoot.pricing_page, "pricing_page"),
     },
     qualification_signals: Array.isArray(root.qualification_signals) ? root.qualification_signals.slice(0, 50).map((item) => {
       const signal = record(item, "signal");
+      const signalName = nullableString(signal.signal, "signal.name", 100) ?? "unknown";
+      const signalValue = nullableBoolean(signal.value, "signal.value");
+      const validEvidence = Array.isArray(signal.evidence) ? signal.evidence.slice(0, 20).flatMap((entry) => {
+        const entryRecord = record(entry, "signal evidence item");
+        const url = nullableString(entryRecord.url, "signal evidence.url", 2048);
+        const reason = nullableString(entryRecord.reason, "signal evidence.reason", 500) ?? "";
+        const pageText = sourceTextByUrl.get(url ?? "") ?? "";
+        if (!url || !sourceTextByUrl.has(url) || !reason
+          || !evidenceSupportsClaim({ [signalName]: { value: signalValue } }, signalName, reason)
+          || !evidenceSupportsClaim({ [signalName]: { value: signalValue } }, signalName, pageText)) return [];
+        return [{ url, reason }];
+      }) : [];
+      const directEvidence = validEvidence.some(({ url, reason }) =>
+        normalizeEvidenceText(sourceTextByUrl.get(url) ?? "").includes(normalizeEvidenceText(reason)));
       return {
-        signal: nullableString(signal.signal, "signal.name", 100) ?? "unknown",
-        value: nullableBoolean(signal.value, "signal.value"),
-        confidence: confidence(signal.confidence, "signal.confidence"),
-        evidence: Array.isArray(signal.evidence) ? signal.evidence.slice(0, 20).map((entry) => {
-          const entryRecord = record(entry, "signal evidence item");
-          const url = nullableString(entryRecord.url, "signal evidence.url", 2048);
-          if (url && !sourceTextByUrl.has(url)) throw new Error("Signal references an unfetched page");
-          return { url: url ?? "", reason: nullableString(entryRecord.reason, "signal evidence.reason", 500) ?? "" };
-        }) : [],
+        signal: signalName,
+        value: validEvidence.length ? signalValue : null,
+        confidence: normalizeConfidence(signal.confidence, "signal.confidence", validEvidence.length ? (directEvidence ? "FACT" : "INFERENCE") : "UNKNOWN", validEvidence.length),
+        evidence: validEvidence,
       };
     }) : [],
-    evidence_legacy: Array.isArray(root.evidence) ? root.evidence.slice(0, 120).map((item) => {
-      const source = record(item, "evidence item");
-      const kind = source.kind === "fact" || source.kind === "inference" ? source.kind : "inference";
-      const url = nullableString(source.url, "evidence.url", 2048);
-      if (!url || !sourceTextByUrl.has(url)) throw new Error("Evidence references an unfetched page");
-      const excerpt = nullableString(source.excerpt, "evidence.excerpt", 500) ?? "";
-      const pageText = sourceTextByUrl.get(url) ?? "";
-      if (!excerpt || !normalizeEvidenceText(pageText).includes(normalizeEvidenceText(excerpt))) {
-        throw new Error("Evidence excerpt does not appear in the source page");
-      }
-      return {
-        field: nullableString(source.field, "evidence.field", 120) ?? "unknown",
-        kind,
-        url,
-        excerpt,
-        confidence: confidence(source.confidence, "evidence.confidence"),
-      };
-    }) : [],
+    evidence_legacy: normalizedEvidence.map((item) => ({
+      field: item.field,
+      kind: item.status === "INFERENCE" ? "inference" as const : "fact" as const,
+      url: item.source_url ?? "",
+      excerpt: item.quote ?? "",
+      confidence: item.confidence,
+    })),
     confidence_by_field: {},
   };
 
-  return team;
+  return normalizeLinkedClaims(team, team.evidence) as BusinessAnalysis;
 }
