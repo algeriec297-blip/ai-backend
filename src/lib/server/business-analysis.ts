@@ -32,6 +32,7 @@ interface PageContent {
 }
 
 const pageKeywords = ["about", "company", "contact", "service", "product", "pricing", "price", "book", "booking", "appointment", "faq"];
+const secondaryPageConcurrency = 3;
 
 export function extractPage(html: string, url: string): PageContent {
   const $ = cheerio.load(html);
@@ -116,22 +117,46 @@ export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
     totalBytes += home.bytes;
     pages.push(extractPage(home.html, home.url));
 
-    for (const pageUrl of discoverPages(home.html, home.url)) {
+    const discoveredPages = discoverPages(home.html, home.url);
+    for (let offset = 0; offset < discoveredPages.length;) {
       const remainingBytes = appConfig.analysis.maxTotalBytes - totalBytes;
       if (pages.length >= appConfig.analysis.maxPages || remainingBytes <= 0) break;
-      try {
-        const page = await fetchSafeHtml(
-          pageUrl,
-          Math.min(appConfig.analysis.maxPageBytes, remainingBytes),
-          appConfig.analysis.fetchTimeoutMs,
-          controller.signal,
-        );
-        totalBytes += page.bytes;
-        pages.push(extractPage(page.html, page.url));
-      } catch (error) {
-        if (controller.signal.aborted) throw new ApiError("TIMEOUT", "The analysis exceeded its total time limit.");
-        if (error instanceof ApiError && ["UNSAFE_URL", "INVALID_URL"].includes(error.code)) throw error;
-        pagesFailed += 1;
+      const pageCount = Math.min(
+        secondaryPageConcurrency,
+        discoveredPages.length - offset,
+        Math.max(1, Math.ceil(remainingBytes / appConfig.analysis.maxPageBytes)),
+      );
+      const pageByteLimit = Math.min(
+        appConfig.analysis.maxPageBytes,
+        Math.floor(remainingBytes / pageCount),
+      );
+      const batch = discoveredPages.slice(offset, offset + pageCount);
+      offset += batch.length;
+      const outcomes = await Promise.all(batch.map(async (pageUrl) => {
+        try {
+          return {
+            page: await fetchSafeHtml(
+              pageUrl,
+              pageByteLimit,
+              appConfig.analysis.fetchTimeoutMs,
+              controller.signal,
+            ),
+          };
+        } catch (error) {
+          return { error };
+        }
+      }));
+      for (const outcome of outcomes) {
+        if ("error" in outcome) {
+          if (controller.signal.aborted) throw new ApiError("TIMEOUT", "The analysis exceeded its total time limit.");
+          if (outcome.error instanceof ApiError && ["UNSAFE_URL", "INVALID_URL"].includes(outcome.error.code)) {
+            throw outcome.error;
+          }
+          pagesFailed += 1;
+          continue;
+        }
+        totalBytes += outcome.page.bytes;
+        pages.push(extractPage(outcome.page.html, outcome.page.url));
       }
     }
 

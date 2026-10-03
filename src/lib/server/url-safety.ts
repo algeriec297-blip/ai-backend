@@ -105,12 +105,31 @@ export function normalizeUserUrl(input: unknown): URL {
   return url;
 }
 
-async function resolvePublicHost(hostname: string): Promise<ResolvedAddress[]> {
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new ApiError("TIMEOUT", "The analysis deadline was reached."));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new ApiError("TIMEOUT", "The analysis deadline was reached."));
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function resolvePublicHost(hostname: string, signal?: AbortSignal): Promise<ResolvedAddress[]> {
   const unwrapped = hostname.replace(/^\[|\]$/g, "");
   const literalFamily = isIP(unwrapped);
   const addresses = literalFamily
     ? [{ address: unwrapped, family: literalFamily }]
-    : await lookup(unwrapped, { all: true, verbatim: true });
+    : await abortable(lookup(unwrapped, { all: true, verbatim: true }), signal);
   if (addresses.length === 0 || addresses.some(({ address }) => !isPublicAddress(address))) {
     throw new ApiError("UNSAFE_URL", "The website resolves to a non-public network address.");
   }
@@ -192,7 +211,7 @@ export async function fetchSafeHtml(
     if (remainingBytes <= 0) throw new ApiError("SITE_BLOCKED", "The website exceeded the allowed analysis response size.");
     let addresses: ResolvedAddress[];
     try {
-      addresses = await resolvePublicHost(url.hostname);
+      addresses = await resolvePublicHost(url.hostname, signal);
     } catch (error) {
       if (error instanceof ApiError) throw error;
       logFetchFailure("dns", url, error);
@@ -204,7 +223,7 @@ export async function fetchSafeHtml(
     try {
       response = await requestPinned(url, address, remainingBytes, timeoutMs, signal);
     } catch (error) {
-      logFetchFailure("request", url, error, { addressFamily: address.family });
+      logFetchFailure("request", url, error, { addressFamily: address.family, timeoutMs });
       if (error instanceof ApiError) throw error;
       throw new ApiError("FETCH_FAILED", "The website could not be fetched.");
     }
