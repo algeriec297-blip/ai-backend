@@ -174,6 +174,14 @@ export async function POST(request: Request) {
     } else {
       failureStage = "website_and_gemini_analysis";
       const analysis = await analyzeWebsite(url);
+      const canonicalUrl = analysis.result.request.canonical_url || url.toString();
+      analysis.result.request = {
+        ...analysis.result.request,
+        input_url: url.toString(),
+        canonical_url: canonicalUrl,
+        domain: analysis.result.request.domain || new URL(canonicalUrl).hostname,
+        pages_analyzed: analysis.pagesAnalyzed,
+      };
       result = analysis.result as unknown as Record<string, unknown>;
       analysisMeta = {
         model: analysis.model,
