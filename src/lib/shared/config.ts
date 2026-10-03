@@ -11,7 +11,7 @@ export const appConfig = {
     maxPages: Number(process.env.MAX_PAGES_PER_ANALYSIS ?? "6"),
     maxPageBytes: Number(process.env.MAX_PAGE_BYTES ?? "1000000"),
     maxTotalBytes: Number(process.env.MAX_TOTAL_BYTES ?? "3000000"),
-    fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS ?? "10000"),
+    fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS ?? "25000"),
     totalTimeoutMs: Number(process.env.ANALYSIS_TIMEOUT_MS ?? "180000"),
     maxRedirects: Number(process.env.MAX_REDIRECTS ?? "3"),
     cacheTtlSeconds: Number(process.env.CACHE_TTL_SECONDS ?? "86400"),
