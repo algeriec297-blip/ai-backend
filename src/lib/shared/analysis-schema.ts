@@ -44,8 +44,14 @@ export interface BusinessAnalysis {
     legal_name: StatusField<string | null>;
     description: StatusField<string | null>;
     industry: StatusField<string | null>;
+    sub_industry: StatusField<string | null>;
     business_model: StatusField<string | null>;
     business_type: StatusField<string | null>;
+    country: StatusField<string | null>;
+    city: StatusField<string | null>;
+    address: StatusField<string | null>;
+    postal_code: StatusField<string | null>;
+    target_market: StatusField<string | null>;
   };
   market: {
     customer_segments: string[];
@@ -298,6 +304,7 @@ function evidenceAnchor(field: string): RegExp | null {
     appears_b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b/,
     b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b/,
     appears_b2c: /\b(?:b2c|consumer(?:s)?|individuals|households|personal use)\b/,
+    appears_b2b2c: /\b(?:b2b2c|business[- ]to[- ]business[- ]to[- ]consumer)\b/,
     online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
     has_online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
     lacks_online_booking: /\b(?:no online booking|booking unavailable|appointments? by phone only|call to book|book by phone only)\b/,
@@ -310,8 +317,8 @@ function evidenceAnchor(field: string): RegExp | null {
     ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b/,
     has_ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b/,
     lacks_ecommerce: /\b(?:no online store|does not sell online|doesn't sell online|online purchases? unavailable)\b/,
-    online_payment: /\b(?:online payment|pay online|checkout|payment methods?)\b/,
-    has_online_payment: /\b(?:online payment|pay online|checkout|payment methods?)\b/,
+    online_payment: /\b(?:online payments?|accept payments online|pay online|checkout|payment methods?)\b/,
+    has_online_payment: /\b(?:online payments?|accept payments online|pay online|checkout|payment methods?)\b/,
     ssl: /\b(?:ssl|https|secure connection)\b/,
     whatsapp: /\b(?:whatsapp|wa me)\b/,
     has_whatsapp: /\b(?:whatsapp|wa me)\b/,
@@ -376,7 +383,7 @@ function normalizeLinkedClaims(value: unknown, evidence: BusinessAnalysis["evide
     const fieldPaths = path.startsWith("signals.") && typeof value.type === "string"
       ? evidenceFieldsForCanonicalPath(`signals.${value.type}`)
       : lastPathPart && /^\d+$/.test(lastPathPart)
-        ? [...evidenceFieldsForCanonicalPath(`${path}.name`), ...evidenceFieldsForCanonicalPath(`${path}.description`)]
+        ? evidenceFieldsForCanonicalPath(`${path}.name`)
         : evidenceFieldsForCanonicalPath(path);
     const linkedEvidence = evidence.filter((item) => item.id && evidenceIds.includes(item.id)
       && fieldPaths.includes(item.field));
@@ -414,8 +421,14 @@ const evidenceFieldAliases: Record<string, string[]> = {
   "identity.legal_name": ["company.legal_name"],
   "identity.description": ["company.description"],
   "identity.industry": ["company.industry"],
+  "identity.sub_industry": ["company.sub_industry"],
   "identity.business_model": ["company.customer_type", "qualification_signals.appears_b2b", "qualification_signals.appears_b2c"],
   "identity.business_type": ["company.business_type"],
+  "identity.country": ["company.country"],
+  "identity.city": ["company.city"],
+  "identity.address": ["company.address", "contact.address"],
+  "identity.postal_code": ["company.postal_code"],
+  "identity.target_market": ["company.target_market"],
   "commercial.has_pricing": ["website_capabilities.pricing_page", "products.pricing_detected"],
   "conversion_signals.has_contact_form": ["contact.contact_form", "website_capabilities.contact_form"],
   "conversion_signals.has_booking": ["qualification_signals.has_online_booking", "signals.has_online_booking", "website_capabilities.online_booking", "website_capabilities.appointment_system"],
@@ -450,6 +463,59 @@ function evidenceFieldsForCanonicalPath(path: string): string[] {
     aliases.push(`qualification_signals.${signalMatch[1]}`);
   }
   return [path, ...aliases];
+}
+
+function hasEvidenceForPath(
+  root: Record<string, unknown>,
+  evidence: BusinessAnalysis["evidence"],
+  path: string,
+): boolean {
+  const fields = evidenceFieldsForCanonicalPath(path);
+  return evidence.some((item) => fields.includes(item.field)
+    && evidenceSupportsClaim(root, item.field, item.quote ?? item.excerpt ?? ""));
+}
+
+function evidenceBackedArray(
+  root: Record<string, unknown>,
+  value: string[],
+  path: string,
+  evidence: BusinessAnalysis["evidence"],
+): string[] {
+  return value.filter((_item, index) => hasEvidenceForPath(root, evidence, `${path}.${index}`));
+}
+
+function evidenceBackedValue<T>(
+  root: Record<string, unknown>,
+  value: T | null,
+  path: string,
+  evidence: BusinessAnalysis["evidence"],
+): T | null {
+  return value !== null && hasEvidenceForPath(root, evidence, path) ? value : null;
+}
+
+function legacyEvidenceBackedValue(
+  value: unknown,
+  fieldAliases: string[],
+  evidence: BusinessAnalysis["evidence"],
+): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const normalizedValue = normalizeEvidenceText(value);
+  return evidence.some((item) => fieldAliases.includes(item.field)
+    && normalizeEvidenceText(item.quote ?? item.excerpt ?? "").includes(normalizedValue))
+    ? value
+    : null;
+}
+
+function legacyEvidenceBackedArray(
+  values: string[],
+  path: string,
+  evidence: BusinessAnalysis["evidence"],
+): string[] {
+  return values.filter((value, index) => legacyEvidenceBackedValue(
+    value,
+    [`${path}.${index}`],
+    evidence,
+  ) !== null);
 }
 
 function supportingEvidence(evidence: BusinessAnalysis["evidence"], canonicalPath: string) {
@@ -506,8 +572,8 @@ function deriveAnalysisQuality(analysis: BusinessAnalysis, pagesAnalyzed: number
   collectClaims(analysis.signals);
 
   const supportedClaims = claims.filter((claim) => claim.status !== "UNKNOWN" && claim.evidence_ids.length > 0);
-  const overallConfidence = supportedClaims.length
-    ? supportedClaims.reduce((total, claim) => total + claim.confidence, 0) / supportedClaims.length
+  const overallConfidence = claims.length
+    ? supportedClaims.reduce((total, claim) => total + claim.confidence, 0) / claims.length
     : 0;
   const coverage = claims.length ? supportedClaims.length / claims.length : 0;
   const evidenceCoverage = supportedClaims.length
@@ -552,6 +618,10 @@ function canonicalizeLegacyInput(
     nullableString(legacyCompany.industry, "company.industry", 200),
     "identity.industry", evidence, fieldConfidence("company.industry"),
   );
+  const subIndustry = statusFieldFromEvidence(
+    nullableString(legacyCompany.sub_industry, "company.sub_industry", 200),
+    "identity.sub_industry", evidence, fieldConfidence("company.sub_industry"),
+  );
   const businessModel = statusFieldFromEvidence(
     nullableString(legacyCompany.customer_type, "company.customer_type", 50),
     "identity.business_model", evidence, fieldConfidence("company.customer_type"),
@@ -559,6 +629,26 @@ function canonicalizeLegacyInput(
   const businessType = statusFieldFromEvidence(
     nullableString(legacyCompany.business_type, "company.business_type", 120),
     "identity.business_type", evidence, fieldConfidence("company.business_type"),
+  );
+  const country = statusFieldFromEvidence(
+    nullableString(legacyCompany.country, "company.country", 100),
+    "identity.country", evidence, fieldConfidence("company.country"),
+  );
+  const city = statusFieldFromEvidence(
+    nullableString(legacyCompany.city, "company.city", 100),
+    "identity.city", evidence, fieldConfidence("company.city"),
+  );
+  const address = statusFieldFromEvidence(
+    nullableString(legacyCompany.address, "company.address", 500),
+    "identity.address", evidence, fieldConfidence("company.address"),
+  );
+  const postalCode = statusFieldFromEvidence(
+    nullableString(legacyCompany.postal_code, "company.postal_code", 40),
+    "identity.postal_code", evidence, fieldConfidence("company.postal_code"),
+  );
+  const targetMarket = statusFieldFromEvidence(
+    nullableString(legacyCompany.target_market, "company.target_market", 300),
+    "identity.target_market", evidence, fieldConfidence("company.target_market"),
   );
   const legacySignalValue = (name: string) => legacySignals.find((signal) => signal.signal === name)?.value ?? null;
   const bookingValue = nullableBoolean(legacyCapabilities.online_booking ?? legacyCapabilities.appointment_system ?? legacySignalValue("has_online_booking"), "website_capabilities.online_booking");
@@ -572,7 +662,11 @@ function canonicalizeLegacyInput(
     const field = statusFieldFromEvidence(service.name, `offerings.services.${index}.name`, evidence);
     return {
       name: statusValue(field) ?? "Unknown service",
-      description: service.description,
+      description: legacyEvidenceBackedValue(
+        service.description,
+        [`services.${index}.description`],
+        evidence,
+      ),
       status: field.status,
       confidence: field.confidence,
       evidence_ids: field.evidence_ids,
@@ -582,7 +676,11 @@ function canonicalizeLegacyInput(
     const field = statusFieldFromEvidence(product.name, `offerings.products.${index}.name`, evidence);
     return {
       name: statusValue(field) ?? "Unknown product",
-      description: product.description,
+      description: legacyEvidenceBackedValue(
+        product.description,
+        [`products.items.${index}.description`],
+        evidence,
+      ),
       status: field.status,
       confidence: field.confidence,
       evidence_ids: field.evidence_ids,
@@ -618,22 +716,27 @@ function canonicalizeLegacyInput(
       legal_name: legalName,
       description,
       industry,
+      sub_industry: subIndustry,
       business_model: businessModel,
       business_type: businessType,
+      country,
+      city,
+      address,
+      postal_code: postalCode,
+      target_market: targetMarket,
     },
     market: {
       ...analysis.market,
-      languages: stringArray(legacyCompany.languages ?? [], "company.languages", 20),
-      target_audience: safeStringArray(legacyCompany.target_market ? [String(legacyCompany.target_market)] : [], "company.target_market", 20),
-      geographic_markets: safeStringArray([legacyCompany.city, legacyCompany.country]
-        .filter((value) => typeof value === "string"), "company.geographic_markets", 20),
+      languages: [],
+      target_audience: statusValue(targetMarket) ? [statusValue(targetMarket)!] : [],
+      geographic_markets: [statusValue(city), statusValue(country)].filter((value): value is string => value !== null),
       company_size_focus: [],
     },
     offerings: {
       ...analysis.offerings,
       services,
       products: productItems,
-      categories: analysis.products.categories,
+      categories: legacyEvidenceBackedArray(analysis.products.categories, "products.categories", evidence),
     },
     commercial: {
       ...analysis.commercial,
@@ -661,18 +764,29 @@ function canonicalizeLegacyInput(
     },
     contact: {
       ...analysis.contact,
-      emails: safeStringArray(legacyContact.email ? [String(legacyContact.email)] : [], "contact.email", 20),
-      phones: safeStringArray(legacyContact.phone ? [String(legacyContact.phone)] : [], "contact.phone", 20),
-      addresses: safeStringArray(legacyCompany.address ? [String(legacyCompany.address)] : [], "company.address", 20),
+      emails: legacyEvidenceBackedValue(legacyContact.email, ["contact.email"], evidence)
+        ? [legacyEvidenceBackedValue(legacyContact.email, ["contact.email"], evidence)!]
+        : [],
+      phones: legacyEvidenceBackedValue(legacyContact.phone, ["contact.phone"], evidence)
+        ? [legacyEvidenceBackedValue(legacyContact.phone, ["contact.phone"], evidence)!]
+        : [],
+      addresses: statusValue(address) ? [statusValue(address)!] : [],
+      contact_urls: legacyEvidenceBackedValue(legacyContact.contact_page, ["contact.contact_page"], evidence)
+        ? [legacyEvidenceBackedValue(legacyContact.contact_page, ["contact.contact_page"], evidence)!]
+        : [],
     },
     social: {
-      linkedin: nullableString(legacySocial.linkedin ?? null, "social_media.linkedin", 2048),
-      facebook: nullableString(legacySocial.facebook ?? null, "social_media.facebook", 2048),
-      instagram: nullableString(legacySocial.instagram ?? null, "social_media.instagram", 2048),
-      x: nullableString(legacySocial.x ?? null, "social_media.x", 2048),
-      youtube: nullableString(legacySocial.youtube ?? null, "social_media.youtube", 2048),
+      linkedin: legacyEvidenceBackedValue(legacySocial.linkedin, ["social_media.linkedin"], evidence),
+      facebook: legacyEvidenceBackedValue(legacySocial.facebook, ["social_media.facebook"], evidence),
+      instagram: legacyEvidenceBackedValue(legacySocial.instagram, ["social_media.instagram"], evidence),
+      x: legacyEvidenceBackedValue(legacySocial.x, ["social_media.x"], evidence),
+      youtube: legacyEvidenceBackedValue(legacySocial.youtube, ["social_media.youtube"], evidence),
       github: null,
-      other: safeStringArray(legacySocial.other_social_links ?? [], "social_media.other_social_links", 20),
+      other: legacyEvidenceBackedArray(
+        safeStringArray(legacySocial.other_social_links ?? [], "social_media.other_social_links", 20),
+        "social_media.other_social_links",
+        evidence,
+      ),
     },
     qualification: {
       ...analysis.qualification,
@@ -801,16 +915,21 @@ function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: nu
       legal_name: legalName,
       description,
       industry,
+      sub_industry: statusValue(identity.sub_industry),
       business_type: businessType,
+      country: statusValue(identity.country),
+      city: statusValue(identity.city),
+      postal_code: statusValue(identity.postal_code),
+      target_market: statusValue(identity.target_market),
       languages: analysis.market.languages,
-      target_market: analysis.market.target_audience[0] ?? null,
       customer_type: customerType,
-      address: analysis.contact.addresses[0] ?? analysis.company.address,
+      address: statusValue(identity.address) ?? analysis.contact.addresses[0] ?? null,
     },
     contact_legacy: {
       ...analysis.contact_legacy,
       email: analysis.contact.emails[0] ?? null,
       phone: analysis.contact.phones[0] ?? null,
+      whatsapp: null,
       contact_page: analysis.contact.contact_urls[0] ?? null,
       contact_form: contactForm,
     },
@@ -822,33 +941,46 @@ function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: nu
       ecommerce_detected: ecommerce,
     },
     social_media: {
-      ...analysis.social_media,
       linkedin: analysis.social.linkedin,
       facebook: analysis.social.facebook,
       instagram: analysis.social.instagram,
       youtube: analysis.social.youtube,
+      tiktok: null,
       x: analysis.social.x,
       other_social_links: analysis.social.other,
     },
     website_capabilities: {
-      ...analysis.website_capabilities,
       online_booking: booking,
       appointment_system: booking,
       ecommerce,
       online_payment: onlinePayment,
       contact_form: contactForm,
+      whatsapp: signalValues.get("has_whatsapp") ?? null,
+      live_chat: null,
       newsletter,
       customer_login: customerLogin,
+      multilingual_support: signalValues.get("has_multilingual_site") ?? null,
+      ssl: null,
       search,
+      blog: null,
       pricing_page: pricingPage,
       mobile_friendly: signalValues.get("has_mobile_optimization") ?? null,
-      whatsapp: signalValues.get("has_whatsapp") ?? null,
     },
     qualification: {
       ...analysis.qualification,
-      b2b: signalValues.get("appears_b2b") ?? (identity.business_model.status !== "UNKNOWN" ? identity.business_model.value === "B2B" : null),
-      b2c: signalValues.get("appears_b2c") ?? (identity.business_model.status !== "UNKNOWN" ? identity.business_model.value === "B2C" : null),
-      b2b2c: signalValues.get("appears_b2b2c") ?? null,
+      b2b: signalValues.get("appears_b2b") ?? (
+        identity.business_model.status !== "UNKNOWN"
+          ? identity.business_model.value === "B2B" || identity.business_model.value === "Both"
+          : null
+      ),
+      b2c: signalValues.get("appears_b2c") ?? (
+        identity.business_model.status !== "UNKNOWN"
+          ? identity.business_model.value === "B2C" || identity.business_model.value === "Both"
+          : null
+      ),
+      b2b2c: signalValues.get("appears_b2b2c") ?? (
+        identity.business_model.status !== "UNKNOWN" ? identity.business_model.value === "Both" : null
+      ),
     },
     qualification_signals: [...signals.values()],
     evidence_legacy: evidenceLegacy,
@@ -935,7 +1067,13 @@ function makeLegacyCompany(identity: Record<string, unknown>): {
   const legalName = isRecord(identity.legal_name) ? identity.legal_name.value : null;
   const description = isRecord(identity.description) ? identity.description.value : null;
   const industry = isRecord(identity.industry) ? identity.industry.value : null;
+  const subIndustry = isRecord(identity.sub_industry) ? identity.sub_industry.value : null;
   const businessType = isRecord(identity.business_type) ? identity.business_type.value : null;
+  const country = isRecord(identity.country) ? identity.country.value : null;
+  const city = isRecord(identity.city) ? identity.city.value : null;
+  const address = isRecord(identity.address) ? identity.address.value : null;
+  const postalCode = isRecord(identity.postal_code) ? identity.postal_code.value : null;
+  const targetMarket = isRecord(identity.target_market) ? identity.target_market.value : null;
   const businessModel = isRecord(identity.business_model) ? identity.business_model.value : null;
 
   return {
@@ -943,14 +1081,14 @@ function makeLegacyCompany(identity: Record<string, unknown>): {
     legal_name: nullableString(legalName, "legal_name", 300),
     description: nullableString(description, "description", 2000),
     industry: nullableString(industry, "industry", 200),
-    sub_industry: null,
+    sub_industry: nullableString(subIndustry, "sub_industry", 200),
     business_type: nullableString(businessType, "business_type", 120),
-    country: null,
-    city: null,
-    address: null,
-    postal_code: null,
+    country: nullableString(country, "country", 100),
+    city: nullableString(city, "city", 100),
+    address: nullableString(address, "address", 500),
+    postal_code: nullableString(postalCode, "postal_code", 40),
     languages: [],
-    target_market: null,
+    target_market: nullableString(targetMarket, "target_market", 300),
     customer_type: nullableString(businessModel as string | null, "customer_type", 50) === null ? null : (businessModel as string) as "B2B" | "B2C" | "Both" | null,
   };
 }
@@ -1077,8 +1215,14 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
         legal_name: { value: nullableString(company.legal_name, "legal_name", 300), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
         description: { value: nullableString(company.description, "description", 2000), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
         industry: { value: nullableString(company.industry, "industry", 200), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
+        sub_industry: { value: nullableString(company.sub_industry, "sub_industry", 200), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
         business_model: { value: null, status: "UNKNOWN", confidence: 0, evidence_ids: [] },
         business_type: { value: nullableString(company.business_type, "business_type", 120), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
+        country: { value: nullableString(company.country, "country", 100), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
+        city: { value: nullableString(company.city, "city", 100), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
+        address: { value: nullableString(company.address, "address", 500), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
+        postal_code: { value: nullableString(company.postal_code, "postal_code", 40), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
+        target_market: { value: nullableString(company.target_market, "target_market", 300), status: "UNKNOWN", confidence: 0, evidence_ids: [] },
       },
       market: { customer_segments: [], target_audience: [], geographic_markets: [], languages: [], industries_served: [], company_size_focus: [] },
       offerings: { services: [], products: [], solutions: [], categories: [], primary_offerings: [] },
@@ -1266,10 +1410,10 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
   const team: BusinessAnalysis = {
     schema_version: nullableString(root.schema_version, "schema_version", 20) ?? "1.0",
     request: {
-      input_url: nullableString(request.input_url, "request.input_url", 2048) ?? "",
-      canonical_url: nullableString(request.canonical_url, "request.canonical_url", 2048) ?? "",
-      domain: nullableString(request.domain, "request.domain", 300) ?? "",
-      analyzed_at: nullableString(request.analyzed_at, "request.analyzed_at", 100) ?? new Date().toISOString(),
+      input_url: nullableString(request.input_url ?? null, "request.input_url", 2048) ?? "",
+      canonical_url: nullableString(request.canonical_url ?? null, "request.canonical_url", 2048) ?? "",
+      domain: nullableString(request.domain ?? null, "request.domain", 300) ?? "",
+      analyzed_at: nullableString(request.analyzed_at ?? null, "request.analyzed_at", 100) ?? new Date().toISOString(),
       pages_analyzed: Number.isFinite(Number(request.pages_analyzed)) ? Number(request.pages_analyzed) : 0,
       analysis_duration_ms: Number.isFinite(Number(request.analysis_duration_ms)) ? Number(request.analysis_duration_ms) : 0,
     },
@@ -1278,16 +1422,22 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       legal_name: statusField(identity.legal_name, "identity.legal_name"),
       description: statusField(identity.description, "identity.description"),
       industry: statusField(identity.industry, "identity.industry"),
+      sub_industry: statusField(identity.sub_industry, "identity.sub_industry"),
       business_model: statusField(identity.business_model, "identity.business_model"),
       business_type: statusField(identity.business_type, "identity.business_type"),
+      country: statusField(identity.country, "identity.country"),
+      city: statusField(identity.city, "identity.city"),
+      address: statusField(identity.address, "identity.address"),
+      postal_code: statusField(identity.postal_code, "identity.postal_code"),
+      target_market: statusField(identity.target_market, "identity.target_market"),
     },
     market: {
-      customer_segments: safeStringArray(market.customer_segments, "market.customer_segments", 20),
-      target_audience: safeStringArray(market.target_audience, "market.target_audience", 20),
-      geographic_markets: safeStringArray(market.geographic_markets, "market.geographic_markets", 20),
-      languages: safeStringArray(market.languages, "market.languages", 20),
-      industries_served: safeStringArray(market.industries_served, "market.industries_served", 20),
-      company_size_focus: safeStringArray(market.company_size_focus, "market.company_size_focus", 20),
+      customer_segments: evidenceBackedArray(root, safeStringArray(market.customer_segments, "market.customer_segments", 20), "market.customer_segments", normalizedEvidence),
+      target_audience: evidenceBackedArray(root, safeStringArray(market.target_audience, "market.target_audience", 20), "market.target_audience", normalizedEvidence),
+      geographic_markets: evidenceBackedArray(root, safeStringArray(market.geographic_markets, "market.geographic_markets", 20), "market.geographic_markets", normalizedEvidence),
+      languages: evidenceBackedArray(root, safeStringArray(market.languages, "market.languages", 20), "market.languages", normalizedEvidence),
+      industries_served: evidenceBackedArray(root, safeStringArray(market.industries_served, "market.industries_served", 20), "market.industries_served", normalizedEvidence),
+      company_size_focus: evidenceBackedArray(root, safeStringArray(market.company_size_focus, "market.company_size_focus", 20), "market.company_size_focus", normalizedEvidence),
     },
     offerings: {
       services: Array.isArray(offerings.services) ? offerings.services.slice(0, 20).map((item) => {
@@ -1310,14 +1460,14 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
           evidence_ids: Array.isArray(recordItem.evidence_ids) ? recordItem.evidence_ids.map((id) => String(id)).slice(0, 20) : [],
         };
       }) : [],
-      solutions: safeStringArray(offerings.solutions, "offerings.solutions", 20),
-      categories: safeStringArray(offerings.categories, "offerings.categories", 20),
-      primary_offerings: safeStringArray(offerings.primary_offerings, "offerings.primary_offerings", 20),
+      solutions: evidenceBackedArray(root, safeStringArray(offerings.solutions, "offerings.solutions", 20), "offerings.solutions", normalizedEvidence),
+      categories: evidenceBackedArray(root, safeStringArray(offerings.categories, "offerings.categories", 20), "offerings.categories", normalizedEvidence),
+      primary_offerings: evidenceBackedArray(root, safeStringArray(offerings.primary_offerings, "offerings.primary_offerings", 20), "offerings.primary_offerings", normalizedEvidence),
     },
     commercial: {
       has_pricing: statusField(commercial.has_pricing, "commercial.has_pricing"),
-      pricing_model: safeStringArray(commercial.pricing_model, "commercial.pricing_model", 20),
-      price_range: nullableString(commercial.price_range, "commercial.price_range", 200),
+      pricing_model: evidenceBackedArray(root, safeStringArray(commercial.pricing_model, "commercial.pricing_model", 20), "commercial.pricing_model", normalizedEvidence),
+      price_range: evidenceBackedValue(root, nullableString(commercial.price_range ?? null, "commercial.price_range", 200), "commercial.price_range", normalizedEvidence),
       has_free_trial: statusField(commercial.has_free_trial, "commercial.has_free_trial"),
       has_demo: statusField(commercial.has_demo, "commercial.has_demo"),
       has_subscription: statusField(commercial.has_subscription, "commercial.has_subscription"),
@@ -1345,38 +1495,38 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       documentation: statusField(digitalCapabilities.documentation, "digital_capabilities.documentation"),
       developer_platform: statusField(digitalCapabilities.developer_platform, "digital_capabilities.developer_platform"),
       mobile_app: statusField(digitalCapabilities.mobile_app, "digital_capabilities.mobile_app"),
-      integrations: safeStringArray(digitalCapabilities.integrations, "digital_capabilities.integrations", 20),
-      technologies_detected: safeStringArray(digitalCapabilities.technologies_detected, "digital_capabilities.technologies_detected", 20),
+      integrations: evidenceBackedArray(root, safeStringArray(digitalCapabilities.integrations, "digital_capabilities.integrations", 20), "digital_capabilities.integrations", normalizedEvidence),
+      technologies_detected: evidenceBackedArray(root, safeStringArray(digitalCapabilities.technologies_detected, "digital_capabilities.technologies_detected", 20), "digital_capabilities.technologies_detected", normalizedEvidence),
     },
     contact: {
-      emails: safeStringArray(contactRoot.emails ?? [], "contact.emails", 20),
-      phones: safeStringArray(contactRoot.phones ?? [], "contact.phones", 20),
-      addresses: safeStringArray(contactRoot.addresses ?? [], "contact.addresses", 20),
-      contact_urls: safeStringArray(contactRoot.contact_urls ?? [], "contact.contact_urls", 20),
-      sales_urls: safeStringArray(contactRoot.sales_urls ?? [], "contact.sales_urls", 20),
-      support_urls: safeStringArray(contactRoot.support_urls ?? [], "contact.support_urls", 20),
+      emails: evidenceBackedArray(root, safeStringArray(contactRoot.emails ?? [], "contact.emails", 20), "contact.emails", normalizedEvidence),
+      phones: evidenceBackedArray(root, safeStringArray(contactRoot.phones ?? [], "contact.phones", 20), "contact.phones", normalizedEvidence),
+      addresses: evidenceBackedArray(root, safeStringArray(contactRoot.addresses ?? [], "contact.addresses", 20), "contact.addresses", normalizedEvidence),
+      contact_urls: evidenceBackedArray(root, safeStringArray(contactRoot.contact_urls ?? [], "contact.contact_urls", 20), "contact.contact_urls", normalizedEvidence),
+      sales_urls: evidenceBackedArray(root, safeStringArray(contactRoot.sales_urls ?? [], "contact.sales_urls", 20), "contact.sales_urls", normalizedEvidence),
+      support_urls: evidenceBackedArray(root, safeStringArray(contactRoot.support_urls ?? [], "contact.support_urls", 20), "contact.support_urls", normalizedEvidence),
     },
     social: {
-      linkedin: nullableString(social.linkedin ?? null, "social.linkedin", 2048),
-      facebook: nullableString(social.facebook ?? null, "social.facebook", 2048),
-      instagram: nullableString(social.instagram ?? null, "social.instagram", 2048),
-      x: nullableString(social.x ?? null, "social.x", 2048),
-      youtube: nullableString(social.youtube ?? null, "social.youtube", 2048),
-      github: nullableString(social.github ?? null, "social.github", 2048),
-      other: safeStringArray(social.other ?? [], "social.other", 20),
+      linkedin: evidenceBackedValue(root, nullableString(social.linkedin ?? null, "social.linkedin", 2048), "social.linkedin", normalizedEvidence),
+      facebook: evidenceBackedValue(root, nullableString(social.facebook ?? null, "social.facebook", 2048), "social.facebook", normalizedEvidence),
+      instagram: evidenceBackedValue(root, nullableString(social.instagram ?? null, "social.instagram", 2048), "social.instagram", normalizedEvidence),
+      x: evidenceBackedValue(root, nullableString(social.x ?? null, "social.x", 2048), "social.x", normalizedEvidence),
+      youtube: evidenceBackedValue(root, nullableString(social.youtube ?? null, "social.youtube", 2048), "social.youtube", normalizedEvidence),
+      github: evidenceBackedValue(root, nullableString(social.github ?? null, "social.github", 2048), "social.github", normalizedEvidence),
+      other: evidenceBackedArray(root, safeStringArray(social.other ?? [], "social.other", 20), "social.other", normalizedEvidence),
     },
     qualification: {
-      b2b: typeof qualification.b2b === "boolean" ? qualification.b2b : null,
-      b2c: typeof qualification.b2c === "boolean" ? qualification.b2c : null,
-      b2b2c: typeof qualification.b2b2c === "boolean" ? qualification.b2b2c : null,
-      enterprise_focus: typeof qualification.enterprise_focus === "boolean" ? qualification.enterprise_focus : null,
-      smb_focus: typeof qualification.smb_focus === "boolean" ? qualification.smb_focus : null,
-      lead_capture: typeof qualification.lead_capture === "boolean" ? qualification.lead_capture : null,
-      sales_led: typeof qualification.sales_led === "boolean" ? qualification.sales_led : null,
-      self_service: typeof qualification.self_service === "boolean" ? qualification.self_service : null,
-      recurring_revenue_signal: typeof qualification.recurring_revenue_signal === "boolean" ? qualification.recurring_revenue_signal : null,
-      transactional_revenue_signal: typeof qualification.transactional_revenue_signal === "boolean" ? qualification.transactional_revenue_signal : null,
-      business_maturity: nullableString(qualification.business_maturity ?? null, "qualification.business_maturity", 100),
+      b2b: evidenceBackedValue(root, typeof qualification.b2b === "boolean" ? qualification.b2b : null, "qualification.b2b", normalizedEvidence),
+      b2c: evidenceBackedValue(root, typeof qualification.b2c === "boolean" ? qualification.b2c : null, "qualification.b2c", normalizedEvidence),
+      b2b2c: evidenceBackedValue(root, typeof qualification.b2b2c === "boolean" ? qualification.b2b2c : null, "qualification.b2b2c", normalizedEvidence),
+      enterprise_focus: evidenceBackedValue(root, typeof qualification.enterprise_focus === "boolean" ? qualification.enterprise_focus : null, "qualification.enterprise_focus", normalizedEvidence),
+      smb_focus: evidenceBackedValue(root, typeof qualification.smb_focus === "boolean" ? qualification.smb_focus : null, "qualification.smb_focus", normalizedEvidence),
+      lead_capture: evidenceBackedValue(root, typeof qualification.lead_capture === "boolean" ? qualification.lead_capture : null, "qualification.lead_capture", normalizedEvidence),
+      sales_led: evidenceBackedValue(root, typeof qualification.sales_led === "boolean" ? qualification.sales_led : null, "qualification.sales_led", normalizedEvidence),
+      self_service: evidenceBackedValue(root, typeof qualification.self_service === "boolean" ? qualification.self_service : null, "qualification.self_service", normalizedEvidence),
+      recurring_revenue_signal: evidenceBackedValue(root, typeof qualification.recurring_revenue_signal === "boolean" ? qualification.recurring_revenue_signal : null, "qualification.recurring_revenue_signal", normalizedEvidence),
+      transactional_revenue_signal: evidenceBackedValue(root, typeof qualification.transactional_revenue_signal === "boolean" ? qualification.transactional_revenue_signal : null, "qualification.transactional_revenue_signal", normalizedEvidence),
+      business_maturity: evidenceBackedValue(root, nullableString(qualification.business_maturity ?? null, "qualification.business_maturity", 100), "qualification.business_maturity", normalizedEvidence),
     },
     signals: Array.isArray(root.signals) ? root.signals.slice(0, 40).map((item) => {
       const signal = record(item, "signals.item");
@@ -1405,26 +1555,26 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       };
     }) : [],
     analysis_quality: {
-      overall_confidence: Math.min(confidence(analysisQuality.overall_confidence, "analysis_quality.overall_confidence") ?? 0, 0.98),
-      coverage_score: confidence(analysisQuality.coverage_score, "analysis_quality.coverage_score") ?? 0,
-      evidence_coverage: confidence(analysisQuality.evidence_coverage, "analysis_quality.evidence_coverage") ?? 0,
+      overall_confidence: Math.min(confidence(analysisQuality.overall_confidence ?? null, "analysis_quality.overall_confidence") ?? 0, 0.98),
+      coverage_score: confidence(analysisQuality.coverage_score ?? null, "analysis_quality.coverage_score") ?? 0,
+      evidence_coverage: confidence(analysisQuality.evidence_coverage ?? null, "analysis_quality.evidence_coverage") ?? 0,
       pages_successfully_read: Number.isFinite(Number(analysisQuality.pages_successfully_read)) ? Number(analysisQuality.pages_successfully_read) : 0,
       pages_failed: Number.isFinite(Number(analysisQuality.pages_failed)) ? Number(analysisQuality.pages_failed) : 0,
       warnings: Array.isArray(analysisQuality.warnings) ? analysisQuality.warnings.map((warning) => String(warning)).slice(0, 20) : [],
     },
     usage: {
-      model: nullableString(usage.model, "usage.model", 100) ?? "gemini-3.1-flash-lite",
+      model: nullableString(usage.model ?? null, "usage.model", 100) ?? "gemini-3.1-flash-lite",
       input_tokens: Number.isFinite(Number(usage.input_tokens)) ? Number(usage.input_tokens) : 0,
       output_tokens: Number.isFinite(Number(usage.output_tokens)) ? Number(usage.output_tokens) : 0,
       estimated_ai_cost_usd: Number.isFinite(Number(usage.estimated_ai_cost_usd)) ? Number(usage.estimated_ai_cost_usd) : 0,
     },
     company: makeLegacyCompany(identity),
     contact_legacy: {
-      email: nullableString(contactRoot.email, "contact.email", 320),
-      phone: nullableString(contactRoot.phone, "contact.phone", 80),
-      whatsapp: nullableString(contactRoot.whatsapp, "contact.whatsapp", 120),
-      contact_page: nullableString(contactRoot.contact_page, "contact.contact_page", 2048),
-      contact_form: nullableBoolean(contactRoot.contact_form, "contact.contact_form"),
+      email: nullableString(contactRoot.email ?? null, "contact.email", 320),
+      phone: nullableString(contactRoot.phone ?? null, "contact.phone", 80),
+      whatsapp: nullableString(contactRoot.whatsapp ?? null, "contact.whatsapp", 120),
+      contact_page: nullableString(contactRoot.contact_page ?? null, "contact.contact_page", 2048),
+      contact_form: nullableBoolean(contactRoot.contact_form ?? null, "contact.contact_form"),
     },
     services: Array.isArray(root.services) ? root.services.slice(0, 40).map((item) => {
       const service = record(item, "service");
@@ -1442,8 +1592,8 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
         };
       }) : [],
       categories: stringArray(productsRoot.categories ?? [], "product categories", 40),
-      pricing_detected: nullableBoolean(productsRoot.pricing_detected, "pricing_detected"),
-      ecommerce_detected: nullableBoolean(productsRoot.ecommerce_detected, "ecommerce_detected"),
+      pricing_detected: nullableBoolean(productsRoot.pricing_detected ?? null, "pricing_detected"),
+      ecommerce_detected: nullableBoolean(productsRoot.ecommerce_detected ?? null, "ecommerce_detected"),
     },
     social_media: {
       linkedin: nullableString(social.linkedin ?? null, "social.linkedin", 2048),
@@ -1455,23 +1605,23 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       other_social_links: safeStringArray(social.other_social_links ?? [], "other_social_links", 30),
     },
     website_capabilities: {
-      online_booking: nullableBoolean(websiteCapabilitiesRoot.online_booking, "online_booking"),
-      appointment_system: nullableBoolean(websiteCapabilitiesRoot.appointment_system, "appointment_system"),
-      ecommerce: nullableBoolean(websiteCapabilitiesRoot.ecommerce, "ecommerce"),
-      online_payment: nullableBoolean(websiteCapabilitiesRoot.online_payment, "online_payment"),
-      contact_form: nullableBoolean(websiteCapabilitiesRoot.contact_form, "contact_form"),
-      whatsapp: nullableBoolean(websiteCapabilitiesRoot.whatsapp, "whatsapp"),
-      live_chat: nullableBoolean(websiteCapabilitiesRoot.live_chat, "live_chat"),
-      newsletter: nullableBoolean(websiteCapabilitiesRoot.newsletter, "newsletter"),
-      customer_login: nullableBoolean(websiteCapabilitiesRoot.customer_login, "customer_login"),
-      multilingual_support: nullableBoolean(websiteCapabilitiesRoot.multilingual_support, "multilingual_support"),
-      ssl: nullableBoolean(websiteCapabilitiesRoot.ssl, "ssl"),
+      online_booking: nullableBoolean(websiteCapabilitiesRoot.online_booking ?? null, "online_booking"),
+      appointment_system: nullableBoolean(websiteCapabilitiesRoot.appointment_system ?? null, "appointment_system"),
+      ecommerce: nullableBoolean(websiteCapabilitiesRoot.ecommerce ?? null, "ecommerce"),
+      online_payment: nullableBoolean(websiteCapabilitiesRoot.online_payment ?? null, "online_payment"),
+      contact_form: nullableBoolean(websiteCapabilitiesRoot.contact_form ?? null, "contact_form"),
+      whatsapp: nullableBoolean(websiteCapabilitiesRoot.whatsapp ?? null, "whatsapp"),
+      live_chat: nullableBoolean(websiteCapabilitiesRoot.live_chat ?? null, "live_chat"),
+      newsletter: nullableBoolean(websiteCapabilitiesRoot.newsletter ?? null, "newsletter"),
+      customer_login: nullableBoolean(websiteCapabilitiesRoot.customer_login ?? null, "customer_login"),
+      multilingual_support: nullableBoolean(websiteCapabilitiesRoot.multilingual_support ?? null, "multilingual_support"),
+      ssl: nullableBoolean(websiteCapabilitiesRoot.ssl ?? null, "ssl"),
       mobile_friendly: normalizedEvidence.some((item) => item.field === "website_capabilities.mobile_friendly")
-        ? nullableBoolean(websiteCapabilitiesRoot.mobile_friendly, "mobile_friendly")
+        ? nullableBoolean(websiteCapabilitiesRoot.mobile_friendly ?? null, "mobile_friendly")
         : null,
-      search: nullableBoolean(websiteCapabilitiesRoot.search, "search"),
-      blog: nullableBoolean(websiteCapabilitiesRoot.blog, "blog"),
-      pricing_page: nullableBoolean(websiteCapabilitiesRoot.pricing_page, "pricing_page"),
+      search: nullableBoolean(websiteCapabilitiesRoot.search ?? null, "search"),
+      blog: nullableBoolean(websiteCapabilitiesRoot.blog ?? null, "blog"),
+      pricing_page: nullableBoolean(websiteCapabilitiesRoot.pricing_page ?? null, "pricing_page"),
     },
     qualification_signals: Array.isArray(root.qualification_signals) ? root.qualification_signals.slice(0, 50).map((item) => {
       const signal = record(item, "signal");
@@ -1511,6 +1661,30 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
     ...team,
     signals: mergeQualificationSignals(team.signals, root.qualification_signals, normalizedEvidence),
   };
-  const canonical = normalizeLinkedClaims(teamWithCanonicalSignals, team.evidence) as BusinessAnalysis;
+  const linkedCanonical = normalizeLinkedClaims(teamWithCanonicalSignals, team.evidence) as BusinessAnalysis;
+  const canonical: BusinessAnalysis = {
+    ...linkedCanonical,
+    offerings: {
+      ...linkedCanonical.offerings,
+      services: linkedCanonical.offerings.services.flatMap((item, index) => {
+        if (item.status === "UNKNOWN") return [];
+        return [{
+          ...item,
+          description: hasEvidenceForPath(root, normalizedEvidence, `offerings.services.${index}.description`)
+            ? item.description
+            : null,
+        }];
+      }),
+      products: linkedCanonical.offerings.products.flatMap((item, index) => {
+        if (item.status === "UNKNOWN") return [];
+        return [{
+          ...item,
+          description: hasEvidenceForPath(root, normalizedEvidence, `offerings.products.${index}.description`)
+            ? item.description
+            : null,
+        }];
+      }),
+    },
+  };
   return deriveLegacyCompatibility(canonical, pagesAnalyzed);
 }
