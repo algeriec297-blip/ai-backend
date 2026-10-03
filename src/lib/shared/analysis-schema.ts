@@ -362,10 +362,10 @@ function normalizeLinkedClaims(value: unknown, evidence: BusinessAnalysis["evide
     const pathParts = path.split(".");
     const lastPathPart = pathParts.at(-1);
     const fieldPaths = path.startsWith("signals.") && typeof value.type === "string"
-      ? [`signals.${value.type}`]
+      ? evidenceFieldsForCanonicalPath(`signals.${value.type}`)
       : lastPathPart && /^\d+$/.test(lastPathPart)
-        ? [`${path}.name`, `${path}.description`]
-        : [path];
+        ? [...evidenceFieldsForCanonicalPath(`${path}.name`), ...evidenceFieldsForCanonicalPath(`${path}.description`)]
+        : evidenceFieldsForCanonicalPath(path);
     const linkedEvidence = evidence.filter((item) => item.id && evidenceIds.includes(item.id)
       && fieldPaths.includes(item.field));
     if (!linkedEvidence.length) {
@@ -395,6 +395,445 @@ function normalizeLinkedClaims(value: unknown, evidence: BusinessAnalysis["evide
     key,
     normalizeLinkedClaims(entry, evidence, path ? `${path}.${key}` : key),
   ]));
+}
+
+const evidenceFieldAliases: Record<string, string[]> = {
+  "identity.company_name": ["company.company_name"],
+  "identity.legal_name": ["company.legal_name"],
+  "identity.description": ["company.description"],
+  "identity.industry": ["company.industry"],
+  "identity.business_model": ["company.customer_type"],
+  "identity.business_type": ["company.business_type"],
+  "commercial.has_pricing": ["website_capabilities.pricing_page", "products.pricing_detected"],
+  "conversion_signals.has_contact_form": ["contact.contact_form", "website_capabilities.contact_form"],
+  "conversion_signals.has_booking": ["website_capabilities.online_booking", "website_capabilities.appointment_system"],
+  "conversion_signals.has_newsletter": ["website_capabilities.newsletter"],
+  "conversion_signals.has_login": ["website_capabilities.customer_login"],
+  "digital_capabilities.ecommerce": ["website_capabilities.ecommerce", "products.ecommerce_detected"],
+  "digital_capabilities.online_payment": ["website_capabilities.online_payment"],
+  "digital_capabilities.booking_system": ["website_capabilities.online_booking", "website_capabilities.appointment_system"],
+  "digital_capabilities.search": ["website_capabilities.search"],
+  "digital_capabilities.mobile_app": ["website_capabilities.mobile_app"],
+  "signals.has_online_booking": ["qualification_signals.has_online_booking", "digital_capabilities.booking_system", "website_capabilities.online_booking", "website_capabilities.appointment_system"],
+  "signals.has_contact_form": ["qualification_signals.has_contact_form", "conversion_signals.has_contact_form", "website_capabilities.contact_form", "contact.contact_form"],
+  "signals.has_online_payment": ["qualification_signals.has_online_payment", "digital_capabilities.online_payment", "website_capabilities.online_payment"],
+  "signals.has_ecommerce": ["qualification_signals.has_ecommerce", "digital_capabilities.ecommerce", "website_capabilities.ecommerce", "products.ecommerce_detected"],
+  "signals.appears_b2b": ["qualification_signals.appears_b2b", "company.customer_type", "identity.business_model"],
+  "signals.appears_b2c": ["qualification_signals.appears_b2c", "company.customer_type", "identity.business_model"],
+  "qualification.b2b": ["qualification_signals.appears_b2b", "qualification_signals.b2b"],
+  "qualification.b2c": ["qualification_signals.appears_b2c", "qualification_signals.b2c"],
+};
+
+function evidenceFieldsForCanonicalPath(path: string): string[] {
+  const aliases = evidenceFieldAliases[path] ?? [];
+  const serviceMatch = /^offerings\.(services|products)\.(\d+)\.(name|description)$/.exec(path);
+  if (serviceMatch) {
+    const [, collection, index, property] = serviceMatch;
+    const legacyCollection = collection === "services" ? "services" : "products.items";
+    aliases.push(`${legacyCollection}.${index}.${property}`);
+  }
+  const signalMatch = /^signals\.([^.]+)$/.exec(path);
+  if (signalMatch) aliases.push(`qualification_signals.${signalMatch[1]}`);
+  return [path, ...aliases];
+}
+
+function supportingEvidence(evidence: BusinessAnalysis["evidence"], canonicalPath: string) {
+  const supportedFields = evidenceFieldsForCanonicalPath(canonicalPath);
+  return evidence.filter((item) => supportedFields.includes(item.field));
+}
+
+function statusFieldFromEvidence<T>(
+  value: T | null,
+  canonicalPath: string,
+  evidence: BusinessAnalysis["evidence"],
+  confidenceValue: unknown = null,
+): StatusField<T | null> {
+  const matches = supportingEvidence(evidence, canonicalPath);
+  const evidenceIds = matches.flatMap((item) => item.id ? [item.id] : []);
+  if (value === null || evidenceIds.length === 0) {
+    return { value: null, status: "UNKNOWN", confidence: 0, evidence_ids: [] };
+  }
+
+  const status = matches.some((item) => item.status === "INFERENCE" || item.kind === "inference")
+    ? "INFERENCE"
+    : "FACT";
+  const evidenceConfidence = matches.reduce((total, item) => total + (item.confidence ?? 0), 0) / matches.length;
+  const statedConfidence = confidence(confidenceValue, `${canonicalPath}.confidence`);
+  const baseConfidence = statedConfidence === null ? evidenceConfidence : Math.min(statedConfidence, evidenceConfidence);
+  return {
+    value,
+    status,
+    confidence: normalizeConfidence(baseConfidence, `${canonicalPath}.confidence`, status, evidenceIds.length),
+    evidence_ids: evidenceIds,
+  };
+}
+
+function statusValue<T>(field: StatusField<T | null>): T | null {
+  return field.status === "UNKNOWN" ? null : field.value;
+}
+
+function deriveAnalysisQuality(analysis: BusinessAnalysis, pagesAnalyzed: number): BusinessAnalysis["analysis_quality"] {
+  const claims: StatusField[] = [];
+  const collectClaims = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(collectClaims);
+      return;
+    }
+    if (!isRecord(value)) return;
+    if (typeof value.status === "string" && Array.isArray(value.evidence_ids)) claims.push(value as unknown as StatusField);
+    Object.values(value).forEach(collectClaims);
+  };
+  collectClaims(analysis.identity);
+  collectClaims(analysis.offerings);
+  collectClaims(analysis.commercial);
+  collectClaims(analysis.conversion_signals);
+  collectClaims(analysis.digital_capabilities);
+  collectClaims(analysis.signals);
+
+  const supportedClaims = claims.filter((claim) => claim.status !== "UNKNOWN" && claim.evidence_ids.length > 0);
+  const overallConfidence = supportedClaims.length
+    ? supportedClaims.reduce((total, claim) => total + claim.confidence, 0) / supportedClaims.length
+    : 0;
+  const coverage = claims.length ? supportedClaims.length / claims.length : 0;
+  const evidenceCoverage = supportedClaims.length
+    ? supportedClaims.filter((claim) => claim.evidence_ids.length > 0).length / supportedClaims.length
+    : 0;
+
+  return {
+    overall_confidence: Math.min(overallConfidence, 0.98),
+    coverage_score: coverage,
+    evidence_coverage: evidenceCoverage,
+    pages_successfully_read: pagesAnalyzed,
+    pages_failed: 0,
+    warnings: [],
+  };
+}
+
+function canonicalizeLegacyInput(
+  analysis: BusinessAnalysis,
+  legacyCompany: Record<string, unknown>,
+  legacyContact: Record<string, unknown>,
+  legacyProducts: Record<string, unknown>,
+  legacySocial: Record<string, unknown>,
+  legacyCapabilities: Record<string, unknown>,
+  evidence: BusinessAnalysis["evidence"],
+  legacySignals: QualificationSignal[],
+  confidenceMap: Record<string, unknown>,
+): BusinessAnalysis {
+  const fieldConfidence = (field: string) => confidenceMap[field] ?? null;
+  const companyName = statusFieldFromEvidence(
+    nullableString(legacyCompany.company_name, "company.company_name", 300),
+    "identity.company_name", evidence, fieldConfidence("company.company_name"),
+  );
+  const legalName = statusFieldFromEvidence(
+    nullableString(legacyCompany.legal_name, "company.legal_name", 300),
+    "identity.legal_name", evidence, fieldConfidence("company.legal_name"),
+  );
+  const description = statusFieldFromEvidence(
+    nullableString(legacyCompany.description, "company.description", 2000),
+    "identity.description", evidence, fieldConfidence("company.description"),
+  );
+  const industry = statusFieldFromEvidence(
+    nullableString(legacyCompany.industry, "company.industry", 200),
+    "identity.industry", evidence, fieldConfidence("company.industry"),
+  );
+  const businessModel = statusFieldFromEvidence(
+    nullableString(legacyCompany.customer_type, "company.customer_type", 50),
+    "identity.business_model", evidence, fieldConfidence("company.customer_type"),
+  );
+  const businessType = statusFieldFromEvidence(
+    nullableString(legacyCompany.business_type, "company.business_type", 120),
+    "identity.business_type", evidence, fieldConfidence("company.business_type"),
+  );
+  const bookingValue = nullableBoolean(legacyCapabilities.online_booking ?? legacyCapabilities.appointment_system, "website_capabilities.online_booking");
+  const contactFormValue = nullableBoolean(legacyContact.contact_form ?? legacyCapabilities.contact_form, "contact.contact_form");
+  const onlinePaymentValue = nullableBoolean(legacyCapabilities.online_payment, "website_capabilities.online_payment");
+  const ecommerceValue = nullableBoolean(legacyProducts.ecommerce_detected ?? legacyCapabilities.ecommerce, "products.ecommerce_detected");
+  const searchValue = nullableBoolean(legacyCapabilities.search, "website_capabilities.search");
+  const pricingValue = nullableBoolean(legacyProducts.pricing_detected ?? legacyCapabilities.pricing_page, "products.pricing_detected");
+
+  const services = analysis.services.map((service, index) => {
+    const field = statusFieldFromEvidence(service.name, `offerings.services.${index}.name`, evidence);
+    return {
+      name: statusValue(field) ?? "Unknown service",
+      description: service.description,
+      status: field.status,
+      confidence: field.confidence,
+      evidence_ids: field.evidence_ids,
+    };
+  });
+  const productItems = analysis.products.items.map((product, index) => {
+    const field = statusFieldFromEvidence(product.name, `offerings.products.${index}.name`, evidence);
+    return {
+      name: statusValue(field) ?? "Unknown product",
+      description: product.description,
+      status: field.status,
+      confidence: field.confidence,
+      evidence_ids: field.evidence_ids,
+    };
+  });
+  const signals = legacySignals.map((signal) => {
+    const legacyValue = signal.signal === "has_online_booking" ? bookingValue
+      : signal.signal === "has_contact_form" ? contactFormValue
+        : signal.signal === "has_online_payment" ? onlinePaymentValue
+          : signal.signal === "has_ecommerce" ? ecommerceValue
+            : signal.signal === "appears_b2b" ? legacyCompany.customer_type === "B2B"
+              : signal.signal === "appears_b2c" ? legacyCompany.customer_type === "B2C"
+                : signal.value;
+    const field = statusFieldFromEvidence(legacyValue, `signals.${signal.signal}`, evidence, signal.confidence);
+    return {
+      id: `sig_${signal.signal}`,
+      type: signal.signal,
+      value: statusValue(field),
+      status: field.status,
+      confidence: field.confidence,
+      evidence_ids: field.evidence_ids,
+    };
+  });
+  const signalValue = (name: string): boolean | null => {
+    const signal = signals.find((item) => item.type === name);
+    return signal?.status === "UNKNOWN" ? null : signal?.value ?? null;
+  };
+
+  return {
+    ...analysis,
+    identity: {
+      company_name: companyName,
+      legal_name: legalName,
+      description,
+      industry,
+      business_model: businessModel,
+      business_type: businessType,
+    },
+    market: {
+      ...analysis.market,
+      languages: stringArray(legacyCompany.languages ?? [], "company.languages", 20),
+      target_audience: safeStringArray(legacyCompany.target_market ? [String(legacyCompany.target_market)] : [], "company.target_market", 20),
+      geographic_markets: safeStringArray([legacyCompany.city, legacyCompany.country]
+        .filter((value) => typeof value === "string"), "company.geographic_markets", 20),
+      company_size_focus: [],
+    },
+    offerings: {
+      ...analysis.offerings,
+      services,
+      products: productItems,
+      categories: analysis.products.categories,
+    },
+    commercial: {
+      ...analysis.commercial,
+      has_pricing: statusFieldFromEvidence(pricingValue, "commercial.has_pricing", evidence),
+    },
+    conversion_signals: {
+      ...analysis.conversion_signals,
+      has_contact_form: statusFieldFromEvidence(contactFormValue, "conversion_signals.has_contact_form", evidence),
+      has_booking: statusFieldFromEvidence(bookingValue, "conversion_signals.has_booking", evidence),
+      has_newsletter: statusFieldFromEvidence(
+        nullableBoolean(legacyCapabilities.newsletter, "website_capabilities.newsletter"),
+        "conversion_signals.has_newsletter", evidence,
+      ),
+      has_login: statusFieldFromEvidence(
+        nullableBoolean(legacyCapabilities.customer_login, "website_capabilities.customer_login"),
+        "conversion_signals.has_login", evidence,
+      ),
+    },
+    digital_capabilities: {
+      ...analysis.digital_capabilities,
+      ecommerce: statusFieldFromEvidence(ecommerceValue, "digital_capabilities.ecommerce", evidence),
+      online_payment: statusFieldFromEvidence(onlinePaymentValue, "digital_capabilities.online_payment", evidence),
+      booking_system: statusFieldFromEvidence(bookingValue, "digital_capabilities.booking_system", evidence),
+      search: statusFieldFromEvidence(searchValue, "digital_capabilities.search", evidence),
+    },
+    contact: {
+      ...analysis.contact,
+      emails: safeStringArray(legacyContact.email ? [String(legacyContact.email)] : [], "contact.email", 20),
+      phones: safeStringArray(legacyContact.phone ? [String(legacyContact.phone)] : [], "contact.phone", 20),
+      addresses: safeStringArray(legacyCompany.address ? [String(legacyCompany.address)] : [], "company.address", 20),
+    },
+    social: {
+      linkedin: nullableString(legacySocial.linkedin ?? null, "social_media.linkedin", 2048),
+      facebook: nullableString(legacySocial.facebook ?? null, "social_media.facebook", 2048),
+      instagram: nullableString(legacySocial.instagram ?? null, "social_media.instagram", 2048),
+      x: nullableString(legacySocial.x ?? null, "social_media.x", 2048),
+      youtube: nullableString(legacySocial.youtube ?? null, "social_media.youtube", 2048),
+      github: null,
+      other: safeStringArray(legacySocial.other_social_links ?? [], "social_media.other_social_links", 20),
+    },
+    qualification: {
+      ...analysis.qualification,
+      b2b: signalValue("appears_b2b") ?? (businessModel.status !== "UNKNOWN" ? businessModel.value === "B2B" : null),
+      b2c: signalValue("appears_b2c") ?? (businessModel.status !== "UNKNOWN" ? businessModel.value === "B2C" : null),
+    },
+    signals,
+  };
+}
+
+function mergeQualificationSignals(
+  canonicalSignals: BusinessAnalysis["signals"],
+  legacySignals: unknown,
+  evidence: BusinessAnalysis["evidence"],
+): BusinessAnalysis["signals"] {
+  if (!Array.isArray(legacySignals)) return canonicalSignals;
+  const merged = [...canonicalSignals];
+  const existingTypes = new Set(merged.map((signal) => signal.type));
+  for (const [index, item] of legacySignals.slice(0, 50).entries()) {
+    if (!isRecord(item)) continue;
+    const type = typeof item.signal === "string" ? item.signal.trim().slice(0, 100) : "";
+    if (!type || existingTypes.has(type)) continue;
+    const requestedValue = item.value === null || typeof item.value === "boolean" ? item.value : null;
+    const requestedUrls = new Set(Array.isArray(item.evidence)
+      ? item.evidence.flatMap((entry) => isRecord(entry) && typeof entry.url === "string" ? [entry.url] : [])
+      : []);
+    const matchingEvidence = supportingEvidence(evidence, `signals.${type}`)
+      .filter((entry) => requestedUrls.has(entry.source_url ?? entry.url ?? ""));
+    const linked = statusFieldFromEvidence(
+      requestedValue,
+      `signals.${type}`,
+      matchingEvidence,
+      item.confidence,
+    );
+    merged.push({
+      id: typeof item.id === "string" && item.id ? item.id.slice(0, 100) : `sig_legacy_${index + 1}`,
+      type,
+      value: statusValue(linked),
+      status: linked.status,
+      confidence: linked.confidence,
+      evidence_ids: linked.evidence_ids,
+    });
+    existingTypes.add(type);
+  }
+  return merged;
+}
+
+function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: number): BusinessAnalysis {
+  const identity = analysis.identity;
+  const booking = statusValue(analysis.digital_capabilities.booking_system);
+  const contactForm = statusValue(analysis.conversion_signals.has_contact_form);
+  const onlinePayment = statusValue(analysis.digital_capabilities.online_payment);
+  const ecommerce = statusValue(analysis.digital_capabilities.ecommerce);
+  const newsletter = statusValue(analysis.conversion_signals.has_newsletter);
+  const customerLogin = statusValue(analysis.conversion_signals.has_login);
+  const pricingPage = statusValue(analysis.commercial.has_pricing);
+  const search = statusValue(analysis.digital_capabilities.search);
+  const signalValues = new Map(analysis.signals.map((signal) => [signal.type, statusValue(signal)]));
+  const signals = new Map<string, QualificationSignal>();
+  const evidenceById = new Map(analysis.evidence.flatMap((item) => item.id ? [[item.id, item] as const] : []));
+  const appendSignal = (name: string, field: StatusField<boolean | null>) => {
+    if (signals.has(name)) return;
+    const evidence = field.evidence_ids.flatMap((id) => {
+      const item = evidenceById.get(id);
+      return item?.source_url || item?.url
+        ? [{ url: item.source_url ?? item.url ?? "", reason: item.quote ?? item.excerpt ?? "" }]
+        : [];
+    });
+    signals.set(name, {
+      signal: name,
+      value: statusValue(field),
+      confidence: field.confidence,
+      evidence,
+    });
+  };
+
+  for (const signal of analysis.signals) {
+    appendSignal(signal.type, signal);
+  }
+  appendSignal("has_online_booking", analysis.digital_capabilities.booking_system);
+  appendSignal("has_contact_form", analysis.conversion_signals.has_contact_form);
+  appendSignal("has_online_payment", analysis.digital_capabilities.online_payment);
+  appendSignal("has_ecommerce", analysis.digital_capabilities.ecommerce);
+
+  const companyName = statusValue(identity.company_name);
+  const legalName = statusValue(identity.legal_name);
+  const description = statusValue(identity.description);
+  const industry = statusValue(identity.industry);
+  const businessType = statusValue(identity.business_type);
+  const businessModel = statusValue(identity.business_model);
+  const customerType = businessModel === "B2B" || businessModel === "B2C" || businessModel === "Both"
+    ? businessModel
+    : signalValues.get("appears_b2b") === true
+      ? "B2B"
+      : signalValues.get("appears_b2c") === true
+        ? "B2C"
+        : null;
+  const evidenceLegacy = analysis.evidence.map((item) => ({
+    id: item.id,
+    field: item.field,
+    kind: item.status === "INFERENCE" || item.kind === "inference" ? "inference" as const : "fact" as const,
+    url: item.source_url ?? item.url ?? "",
+    excerpt: item.quote ?? item.excerpt ?? "",
+    confidence: item.confidence,
+    status: item.status,
+    quote: item.quote,
+    source_url: item.source_url,
+    source_page_type: item.source_page_type,
+    reason: item.reason,
+  }));
+
+  return {
+    ...analysis,
+    request: { ...analysis.request, pages_analyzed: pagesAnalyzed },
+    analysis_quality: deriveAnalysisQuality(analysis, pagesAnalyzed),
+    company: {
+      ...analysis.company,
+      company_name: companyName,
+      legal_name: legalName,
+      description,
+      industry,
+      business_type: businessType,
+      languages: analysis.market.languages,
+      target_market: analysis.market.target_audience[0] ?? null,
+      customer_type: customerType,
+      address: analysis.contact.addresses[0] ?? analysis.company.address,
+    },
+    contact_legacy: {
+      ...analysis.contact_legacy,
+      email: analysis.contact.emails[0] ?? null,
+      phone: analysis.contact.phones[0] ?? null,
+      contact_page: analysis.contact.contact_urls[0] ?? null,
+      contact_form: contactForm,
+    },
+    services: analysis.offerings.services
+      .filter((item) => item.status !== "UNKNOWN")
+      .map(({ name, description: serviceDescription }) => ({ name, description: serviceDescription })),
+    products: {
+      items: analysis.offerings.products
+        .filter((item) => item.status !== "UNKNOWN")
+        .map(({ name, description: productDescription }) => ({ name, description: productDescription })),
+      categories: analysis.offerings.categories,
+      pricing_detected: pricingPage,
+      ecommerce_detected: ecommerce,
+    },
+    social_media: {
+      ...analysis.social_media,
+      linkedin: analysis.social.linkedin,
+      facebook: analysis.social.facebook,
+      instagram: analysis.social.instagram,
+      youtube: analysis.social.youtube,
+      x: analysis.social.x,
+      other_social_links: analysis.social.other,
+    },
+    website_capabilities: {
+      ...analysis.website_capabilities,
+      online_booking: booking,
+      appointment_system: booking,
+      ecommerce,
+      online_payment: onlinePayment,
+      contact_form: contactForm,
+      newsletter,
+      customer_login: customerLogin,
+      search,
+      pricing_page: pricingPage,
+      mobile_friendly: signalValues.get("has_mobile_optimization") ?? null,
+      whatsapp: signalValues.get("has_whatsapp") ?? null,
+    },
+    qualification: {
+      ...analysis.qualification,
+      b2b: signalValues.get("appears_b2b") ?? (identity.business_model.status !== "UNKNOWN" ? identity.business_model.value === "B2B" : null),
+      b2c: signalValues.get("appears_b2c") ?? (identity.business_model.status !== "UNKNOWN" ? identity.business_model.value === "B2C" : null),
+      b2b2c: signalValues.get("appears_b2b2c") ?? null,
+    },
+    qualification_signals: [...signals.values()],
+    evidence_legacy: evidenceLegacy,
+  };
 }
 
 function safeStringArray(value: unknown, field: string, maxItems = 40): string[] {
@@ -527,7 +966,7 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       throw new Error("Invalid analysis arrays");
     }
 
-    const normalizedEvidence: Evidence[] = evidence.slice(0, 120).flatMap((item) => {
+    const normalizedEvidence: Evidence[] = evidence.slice(0, 120).flatMap((item, index) => {
       if (!isRecord(item) || (item.kind !== "fact" && item.kind !== "inference")) return [];
       if (typeof item.url !== "string" || typeof item.excerpt !== "string") return [];
       const url = item.url.trim().slice(0, 2048);
@@ -539,10 +978,14 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       if (item.confidence !== null && (typeof item.confidence !== "number"
         || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) return [];
       return [{
+        id: typeof item.id === "string" && item.id.trim() ? item.id.trim().slice(0, 50) : `ev_${index + 1}`,
         field,
         kind: item.kind as EvidenceKind,
+        status: item.kind === "fact" ? "FACT" as const : "INFERENCE" as const,
         url,
         excerpt,
+        quote: excerpt,
+        source_url: url,
         confidence: normalizeConfidence(item.confidence, "evidence.confidence", item.kind === "fact" ? "FACT" : "INFERENCE", 1),
       }];
     });
@@ -600,7 +1043,7 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       };
     });
 
-    return {
+    const legacyNormalized: BusinessAnalysis = {
       schema_version: "1.0",
       request: {
         input_url: typeof legacyRequest.input_url === "string" ? legacyRequest.input_url : "",
@@ -742,6 +1185,20 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       evidence_legacy: normalizedEvidence,
       confidence_by_field: safeConfidenceMap,
     };
+    const canonical = canonicalizeLegacyInput(
+      legacyNormalized,
+      company,
+      contact,
+      products,
+      social,
+      capabilities,
+      normalizedEvidence,
+      normalizedSignals,
+      confidenceMap,
+    );
+    const pagesAnalyzed = sourceTextByUrl.size;
+    const linkedCanonical = normalizeLinkedClaims(canonical, normalizedEvidence) as BusinessAnalysis;
+    return deriveLegacyCompatibility(linkedCanonical, pagesAnalyzed);
   }
 
   const identity = isRecord(root.identity) ? record(root.identity, "identity") : {};
@@ -909,7 +1366,7 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       const requestedEvidenceIds = Array.isArray(signal.evidence_ids) ? signal.evidence_ids.map((entry) => String(entry)).slice(0, 20) : [];
       const field = nullableString(signal.type ?? null, "signals.type", 100) ?? "unknown";
       const validEvidenceIds = requestedEvidenceIds.filter((evidenceId) => normalizedEvidence.some((entry) =>
-        entry.id === evidenceId && entry.field === `signals.${field}`));
+        entry.id === evidenceId && evidenceFieldsForCanonicalPath(`signals.${field}`).includes(entry.field)));
       const normalizedStatus = validEvidenceIds.length ? requestedStatus : "UNKNOWN";
       return {
         id,
@@ -1030,5 +1487,11 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
     confidence_by_field: {},
   };
 
-  return normalizeLinkedClaims(team, team.evidence) as BusinessAnalysis;
+  const pagesAnalyzed = sourceTextByUrl.size;
+  const teamWithCanonicalSignals: BusinessAnalysis = {
+    ...team,
+    signals: mergeQualificationSignals(team.signals, root.qualification_signals, normalizedEvidence),
+  };
+  const canonical = normalizeLinkedClaims(teamWithCanonicalSignals, team.evidence) as BusinessAnalysis;
+  return deriveLegacyCompatibility(canonical, pagesAnalyzed);
 }
