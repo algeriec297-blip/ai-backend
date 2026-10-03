@@ -12,6 +12,7 @@ export type ApiErrorCode =
   | "QUOTA_EXCEEDED"
   | "UNAUTHORIZED"
   | "FIREBASE_NOT_CONFIGURED"
+  | "DEPENDENCY_UNAVAILABLE"
   | "INTERNAL_ERROR";
 
 const statusByCode: Record<ApiErrorCode, number> = {
@@ -26,6 +27,7 @@ const statusByCode: Record<ApiErrorCode, number> = {
   QUOTA_EXCEEDED: 429,
   UNAUTHORIZED: 401,
   FIREBASE_NOT_CONFIGURED: 503,
+  DEPENDENCY_UNAVAILABLE: 503,
   INTERNAL_ERROR: 500,
 };
 
@@ -99,11 +101,14 @@ export function errorResponse(
       code: apiError.code,
       ...(error instanceof ApiError ? {} : safeErrorDetails(error)),
     });
-    if (!(error instanceof ApiError)) {
-      return Response.json({
-        error: { code: apiError.code, message: apiError.message, reference_id: referenceId },
-      }, { status: apiError.status });
-    }
+    return Response.json({
+      error: {
+        code: apiError.code,
+        message: apiError.message,
+        reference_id: referenceId,
+        failure_stage: typeof context.failureStage === "string" ? context.failureStage : undefined,
+      },
+    }, { status: apiError.status });
   }
   return Response.json({ error: { code: apiError.code, message: apiError.message } }, { status: apiError.status });
 }
