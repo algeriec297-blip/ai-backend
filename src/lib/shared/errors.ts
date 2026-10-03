@@ -59,7 +59,7 @@ export function safeErrorDetails(error: unknown): {
     : {};
   let errorMessage = typeof errorRecord.message === "string" ? errorRecord.message : String(error);
   for (const [name, value] of Object.entries(process.env)) {
-    if (/(?:KEY|TOKEN|SECRET|PASSWORD|PRIVATE|CREDENTIAL)/i.test(name) && value && value.length >= 4) {
+    if (/(?:KEY|TOKEN|SECRET|PASSWORD|PRIVATE|CREDENTIAL|EMAIL|ACCOUNT|AUTH)/i.test(name) && value && value.length >= 4) {
       errorMessage = errorMessage.replaceAll(value, "[REDACTED]");
     }
   }
