@@ -9,6 +9,7 @@ import { GET as health } from "@/routes/v1/health/route";
 import { DELETE as revokeKey } from "@/routes/v1/keys/[id]/route";
 import { GET as getKeys, POST as createKey } from "@/routes/v1/keys/route";
 import { GET as getUsage } from "@/routes/v1/usage/route";
+import { safeErrorDetails } from "@/lib/shared/errors";
 
 type RouteHandler = (
   request: Request,
@@ -95,7 +96,12 @@ app.use((error: unknown, _request: ExpressRequest, response: ExpressResponse, _n
     response.status(403).json({ error: { code: "CORS_ORIGIN_DENIED", message: "This browser origin is not allowed." } });
     return;
   }
-  console.error("Backend middleware failed", { code: "INTERNAL_ERROR" });
+  console.error("Backend middleware failed", {
+    method: _request.method,
+    path: _request.path,
+    code: "INTERNAL_ERROR",
+    ...safeErrorDetails(error),
+  });
   response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } });
 });
 
