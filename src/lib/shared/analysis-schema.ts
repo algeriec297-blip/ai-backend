@@ -617,7 +617,7 @@ function deriveAnalysisQuality(analysis: BusinessAnalysis, pagesAnalyzed: number
     evidence_coverage: evidenceCoverage,
     pages_successfully_read: pagesAnalyzed,
     pages_failed: 0,
-    warnings: [],
+    warnings: analysis.analysis_quality.warnings.slice(0, 20),
   };
 }
 
@@ -1415,6 +1415,29 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
   const contactRoot = isRecord(root.contact) ? record(root.contact, "contact") : {};
   const productsRoot = isRecord(root.products) ? record(root.products, "products") : {};
   const websiteCapabilitiesRoot = isRecord(root.website_capabilities) ? record(root.website_capabilities, "website_capabilities") : {};
+  let droppedOfferingItems = 0;
+  const normalizeOfferingItems = (value: unknown, collection: "services" | "products") => {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, 20).flatMap((item) => {
+      try {
+        if (!isRecord(item)) throw new Error("Offering item must be an object");
+        const name = nullableString(item.name, `offerings.${collection}.name`, 200);
+        if (!name || /^unknown(?:\s+(?:service|product))?$/i.test(name)) {
+          throw new Error("Offering item must have a verified name");
+        }
+        const description = nullableString(item.description, `offerings.${collection}.description`, 1000);
+        const status = analyzeStatus(item.status);
+        const itemConfidence = confidence(item.confidence, `offerings.${collection}.confidence`) ?? 0;
+        const evidenceIds = Array.isArray(item.evidence_ids)
+          ? item.evidence_ids.map((id) => String(id)).slice(0, 20)
+          : [];
+        return [{ name, description, status, confidence: itemConfidence, evidence_ids: evidenceIds }];
+      } catch {
+        droppedOfferingItems += 1;
+        return [];
+      }
+    });
+  };
   const normalizedEvidence: BusinessAnalysis["evidence"] = Array.isArray(root.evidence)
     ? root.evidence.slice(0, 120).flatMap((item) => {
       try {
@@ -1478,26 +1501,8 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       company_size_focus: evidenceBackedArray(root, safeStringArray(market.company_size_focus, "market.company_size_focus", 20), "market.company_size_focus", normalizedEvidence),
     },
     offerings: {
-      services: Array.isArray(offerings.services) ? offerings.services.slice(0, 20).map((item) => {
-        const recordItem = record(item, "offerings.services item");
-        return {
-          name: nullableString(recordItem.name, "offerings.services.name", 200) ?? "Unknown service",
-          description: nullableString(recordItem.description, "offerings.services.description", 1000),
-          status: analyzeStatus(recordItem.status),
-          confidence: confidence(recordItem.confidence, "offerings.services.confidence") ?? 0,
-          evidence_ids: Array.isArray(recordItem.evidence_ids) ? recordItem.evidence_ids.map((id) => String(id)).slice(0, 20) : [],
-        };
-      }) : [],
-      products: Array.isArray(offerings.products) ? offerings.products.slice(0, 20).map((item) => {
-        const recordItem = record(item, "offerings.products item");
-        return {
-          name: nullableString(recordItem.name, "offerings.products.name", 200) ?? "Unknown product",
-          description: nullableString(recordItem.description, "offerings.products.description", 1000),
-          status: analyzeStatus(recordItem.status),
-          confidence: confidence(recordItem.confidence, "offerings.products.confidence") ?? 0,
-          evidence_ids: Array.isArray(recordItem.evidence_ids) ? recordItem.evidence_ids.map((id) => String(id)).slice(0, 20) : [],
-        };
-      }) : [],
+      services: normalizeOfferingItems(offerings.services, "services"),
+      products: normalizeOfferingItems(offerings.products, "products"),
       solutions: evidenceBackedArray(root, safeStringArray(offerings.solutions, "offerings.solutions", 20), "offerings.solutions", normalizedEvidence),
       categories: evidenceBackedArray(root, safeStringArray(offerings.categories, "offerings.categories", 20), "offerings.categories", normalizedEvidence),
       primary_offerings: evidenceBackedArray(root, safeStringArray(offerings.primary_offerings, "offerings.primary_offerings", 20), "offerings.primary_offerings", normalizedEvidence),
@@ -1598,7 +1603,12 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       evidence_coverage: confidence(analysisQuality.evidence_coverage ?? null, "analysis_quality.evidence_coverage") ?? 0,
       pages_successfully_read: Number.isFinite(Number(analysisQuality.pages_successfully_read)) ? Number(analysisQuality.pages_successfully_read) : 0,
       pages_failed: Number.isFinite(Number(analysisQuality.pages_failed)) ? Number(analysisQuality.pages_failed) : 0,
-      warnings: Array.isArray(analysisQuality.warnings) ? analysisQuality.warnings.map((warning) => String(warning)).slice(0, 20) : [],
+      warnings: [
+        ...(Array.isArray(analysisQuality.warnings) ? analysisQuality.warnings.map((warning) => String(warning)) : []),
+        ...(droppedOfferingItems
+          ? [`${droppedOfferingItems} malformed offering item${droppedOfferingItems === 1 ? " was" : "s were"} discarded.`]
+          : []),
+      ].slice(0, 20),
     },
     usage: {
       model: nullableString(usage.model ?? null, "usage.model", 100) ?? "gemini-3.1-flash-lite",
