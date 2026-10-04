@@ -1416,6 +1416,7 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
   const productsRoot = isRecord(root.products) ? record(root.products, "products") : {};
   const websiteCapabilitiesRoot = isRecord(root.website_capabilities) ? record(root.website_capabilities, "website_capabilities") : {};
   let droppedOfferingItems = 0;
+  let repairedSignalConfidence = 0;
   const normalizeOfferingItems = (value: unknown, collection: "services" | "products") => {
     if (!Array.isArray(value)) return [];
     return value.slice(0, 20).flatMap((item) => {
@@ -1580,12 +1581,30 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       const validEvidenceIds = requestedEvidenceIds.filter((evidenceId) => normalizedEvidence.some((entry) =>
         entry.id === evidenceId && evidenceFieldsForCanonicalPath(`signals.${field}`).includes(entry.field)));
       const normalizedStatus = validEvidenceIds.length ? requestedStatus : "UNKNOWN";
+      const signalEvidence = normalizedEvidence.filter((entry) =>
+        entry.id && validEvidenceIds.includes(entry.id)
+        && evidenceFieldsForCanonicalPath(`signals.${field}`).includes(entry.field));
+      let declaredConfidence: number | null = 0;
+      if (normalizedStatus !== "UNKNOWN") try {
+        declaredConfidence = confidence(signal.confidence, "signals.confidence");
+      } catch {
+        declaredConfidence = null;
+        repairedSignalConfidence += 1;
+      }
+      const evidenceConfidence = signalEvidence.length
+        ? signalEvidence.reduce((total, entry) => total + (entry.confidence ?? 0), 0) / signalEvidence.length
+        : 0;
       return {
         id,
         type: field,
         value: normalizedStatus === "UNKNOWN" || (signal.value !== null && typeof signal.value !== "boolean") ? null : signal.value,
         status: normalizedStatus,
-        confidence: normalizeConfidence(signal.confidence, "signals.confidence", normalizedStatus, validEvidenceIds.length),
+        confidence: normalizeConfidence(
+          declaredConfidence ?? evidenceConfidence,
+          "signals.confidence",
+          normalizedStatus,
+          validEvidenceIds.length,
+        ),
         evidence_ids: validEvidenceIds,
       };
     }) : [],
@@ -1607,6 +1626,9 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
         ...(Array.isArray(analysisQuality.warnings) ? analysisQuality.warnings.map((warning) => String(warning)) : []),
         ...(droppedOfferingItems
           ? [`${droppedOfferingItems} malformed offering item${droppedOfferingItems === 1 ? " was" : "s were"} discarded.`]
+          : []),
+        ...(repairedSignalConfidence
+          ? [`${repairedSignalConfidence} signal confidence value${repairedSignalConfidence === 1 ? " was" : "s were"} replaced with confidence derived from verified evidence.`]
           : []),
       ].slice(0, 20),
     },
