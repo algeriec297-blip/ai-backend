@@ -19,7 +19,7 @@ export const appConfig = {
 } as const;
 
 export const plans = {
-  free: { monthlyRequests: 100, requestsPerMinute: 5 },
+  free: { monthlyRequests: 10_000, requestsPerMinute: 5 },
   starter: { monthlyRequests: 2_000, requestsPerMinute: 30 },
   pro: { monthlyRequests: 20_000, requestsPerMinute: 120 },
   business: { monthlyRequests: 100_000, requestsPerMinute: 300 },
