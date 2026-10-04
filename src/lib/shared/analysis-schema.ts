@@ -314,6 +314,16 @@ function evidenceAnchor(field: string): RegExp | null {
     has_contact_form: /\b(?:contact form|contact us|send us a message)\b|(?:نموذج الاتصال|اتصل بنا|تواصل معنا|أرسل لنا رسالة)/u,
     pricing_page: /\b(?:pricing|prices?|plans?)\b|(?:الأسعار|السعر|خطط الأسعار|الباقات)/u,
     has_pricing: /\b(?:pricing|prices?|plans?)\b|(?:الأسعار|السعر|خطط الأسعار|الباقات)/u,
+    has_demo_cta: /\b(?:demo|request a demo|book a demo|product demo)\b/,
+    has_sales_cta: /\b(?:contact sales|talk to sales|sales team|request a quote)\b/,
+    has_demo: /\b(?:demo|request a demo|book a demo|product demo)\b/,
+    has_signup: /\b(?:sign up|signup|create an account|register|get started|download)\b/,
+    has_login: /\b(?:log in|login|sign in)\b/,
+    api: /\b(?:api|developer api|api documentation)\b/,
+    documentation: /\b(?:documentation|docs|developer docs)\b/,
+    developer_platform: /\b(?:developer platform|developers|developer tools)\b/,
+    mobile_app: /\b(?:app store|google play|mobile app|download our app)\b/,
+    has_subscription: /\b(?:subscription|monthly plan|annual plan|per user per month)\b/,
     ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b|(?:متجر إلكتروني|تسوق عبر الإنترنت|اشتر الآن|إتمام الشراء)/u,
     has_ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b|(?:متجر إلكتروني|تسوق عبر الإنترنت|اشتر الآن|إتمام الشراء)/u,
     lacks_ecommerce: /\b(?:no online store|does not sell online|doesn't sell online|online purchases? unavailable)\b/,
@@ -330,9 +340,6 @@ function evidenceAnchor(field: string): RegExp | null {
     has_multilingual_site: /\b(?:multilingual|multiple languages|language selector|select language|english.{0,30}(?:español|spanish|français|deutsch)|(?:español|spanish|français|deutsch).{0,30}english)\b/,
     newsletter: /\b(?:newsletter|subscribe for updates)\b/,
     customer_login: /\b(?:log in|login|sign in)\b/,
-    has_login: /\b(?:log in|login|sign in)\b/,
-    has_signup: /\b(?:sign up|create an account|register)\b/,
-    has_demo: /\b(?:request a demo|book a demo|product demo)\b/,
     has_free_trial: /\bfree trial\b/,
     blog: /\b(?:blog|articles|latest posts)\b/,
     search: /\b(?:search|search for)\b/,
@@ -928,6 +935,10 @@ function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: nu
     source_page_type: item.source_page_type ?? "unknown",
     reason: item.reason ?? "",
   }));
+  const confidenceByField = { ...analysis.confidence_by_field };
+  for (const item of analysis.evidence) {
+    if (item.confidence !== null) confidenceByField[item.field] = item.confidence;
+  }
   const verifiedServices = analysis.offerings.services.filter((item) => item.status !== "UNKNOWN");
   const verifiedProducts = analysis.offerings.products.filter((item) => item.status !== "UNKNOWN");
 
@@ -1015,6 +1026,7 @@ function deriveLegacyCompatibility(analysis: BusinessAnalysis, pagesAnalyzed: nu
     },
     qualification_signals: [...signals.values()],
     evidence_legacy: evidenceLegacy,
+    confidence_by_field: confidenceByField,
   };
 }
 
@@ -1459,6 +1471,7 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
         status,
         confidence: normalizeConfidence(evidenceItem.confidence, "evidence.confidence", status, 1),
         quote,
+        excerpt: quote,
         source_url: sourceUrl,
         source_page_type: nullableString(evidenceItem.source_page_type ?? null, "evidence.source_page_type", 100) ?? "unknown",
         reason: nullableString(evidenceItem.reason ?? null, "evidence.reason", 500) ?? "",
