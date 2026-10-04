@@ -107,6 +107,7 @@ export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
   const pages: PageContent[] = [];
   let totalBytes = 0;
   let pagesFailed = 0;
+  let pagesTruncated = 0;
   try {
     const home = await fetchSafeHtml(
       url,
@@ -115,6 +116,7 @@ export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
       controller.signal,
     );
     totalBytes += home.bytes;
+    if (home.truncated) pagesTruncated += 1;
     pages.push(extractPage(home.html, home.url));
 
     const discoveredPages = discoverPages(home.html, home.url);
@@ -156,6 +158,7 @@ export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
           continue;
         }
         totalBytes += outcome.page.bytes;
+        if (outcome.page.truncated) pagesTruncated += 1;
         pages.push(extractPage(outcome.page.html, outcome.page.url));
       }
     }
@@ -178,12 +181,12 @@ export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
     };
     analysis.result.analysis_quality.pages_successfully_read = pages.length;
     analysis.result.analysis_quality.pages_failed = pagesFailed;
-    if (pagesFailed > 0) {
-      analysis.result.analysis_quality.warnings = [
-        ...analysis.result.analysis_quality.warnings,
-        `${pagesFailed} discovered page${pagesFailed === 1 ? "" : "s"} could not be read.`,
-      ].slice(0, 20);
-    }
+    const warnings = [...analysis.result.analysis_quality.warnings];
+    if (pagesFailed > 0) warnings.push(`${pagesFailed} discovered page${pagesFailed === 1 ? "" : "s"} could not be read.`);
+    if (pagesTruncated > 0) warnings.push(
+      `${pagesTruncated} page${pagesTruncated === 1 ? "" : "s"} exceeded the response limit; analysis used the available page content.`,
+    );
+    analysis.result.analysis_quality.warnings = warnings.slice(0, 20);
     analysis.pagesAnalyzed = pages.length;
     return analysis;
   } catch (error) {

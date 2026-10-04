@@ -20,6 +20,7 @@ export interface SafeHtmlResponse {
   html: string;
   bytes: number;
   contentType: string;
+  truncated: boolean;
 }
 
 function isPublicIpv4(address: string): boolean {
@@ -199,6 +200,7 @@ function requestPinned(url: URL, address: ResolvedAddress, maxBytes: number, tim
   status: number;
   headers: IncomingHttpHeaders;
   body: Buffer;
+  truncated: boolean;
 }> {
   const requestFunction = url.protocol === "https:" ? httpsRequest : httpRequest;
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
@@ -218,20 +220,33 @@ function requestPinned(url: URL, address: ResolvedAddress, maxBytes: number, tim
 
   return new Promise((resolve, reject) => {
     const request = requestFunction(options, (response) => {
+      const status = response.statusCode ?? 0;
+      if ([301, 302, 303, 307, 308].includes(status)) {
+        response.destroy();
+        resolve({ status, headers: response.headers, body: Buffer.alloc(0), truncated: false });
+        return;
+      }
       const chunks: Buffer[] = [];
       let size = 0;
+      let truncated = false;
       response.on("data", (chunk: Buffer) => {
-        size += chunk.length;
-        if (size > maxBytes) {
-          request.destroy(new ApiError("SITE_BLOCKED", "The website page exceeds the allowed response size."));
-          return;
+        const remaining = maxBytes - size;
+        if (chunk.length > remaining) {
+          if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
+          size = maxBytes;
+          truncated = true;
+          response.destroy();
+          resolve({ status, headers: response.headers, body: Buffer.concat(chunks), truncated });
+        } else {
+          size += chunk.length;
+          chunks.push(chunk);
         }
-        chunks.push(chunk);
       });
       response.on("end", () => resolve({
-        status: response.statusCode ?? 0,
+        status,
         headers: response.headers,
         body: Buffer.concat(chunks),
+        truncated,
       }));
       response.on("error", reject);
     });
@@ -340,7 +355,13 @@ export async function fetchSafeHtml(
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
       throw new ApiError("SITE_BLOCKED", "The URL did not return an HTML page.");
     }
-    return { url: url.toString(), html: response.body.toString("utf8"), bytes: downloadedBytes, contentType };
+    return {
+      url: url.toString(),
+      html: response.body.toString("utf8"),
+      bytes: downloadedBytes,
+      contentType,
+      truncated: response.truncated,
+    };
   }
   throw new ApiError("FETCH_FAILED", "The redirect limit was reached.");
 }
