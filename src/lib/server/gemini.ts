@@ -118,7 +118,6 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
   const schemaCharacters = 0;
   try {
     const endpoint = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(appConfig.gemini.model)}:generateContent`);
-    endpoint.searchParams.set("key", apiKey);
     const requestGemini = async (requestPrompt: string): Promise<Response> => {
       const requestBody = JSON.stringify({
         contents: [{ role: "user", parts: [{ text: requestPrompt }] }],
@@ -131,7 +130,10 @@ export async function analyzeWithGemini(pages: SourcePage[], analysisSignal?: Ab
           method: "POST",
           redirect: "error",
           signal: controller.signal,
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": apiKey,
+          },
           body: requestBody,
         });
         if (![429, 500, 503].includes(lastResponse.status) || attempt === 4) break;
