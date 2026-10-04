@@ -246,6 +246,40 @@ function nullableString(value: unknown, field: string, maxLength = 2000): string
   return value.trim().slice(0, maxLength) || null;
 }
 
+type SocialPlatform = "linkedin" | "facebook" | "instagram" | "x" | "youtube" | "github" | "tiktok";
+
+const socialPlatformDomains: Record<SocialPlatform, string[]> = {
+  linkedin: ["linkedin.com", "linkedin.cn", "lnkd.in"],
+  facebook: ["facebook.com", "fb.com", "fb.me", "fb.watch"],
+  instagram: ["instagram.com"],
+  x: ["x.com", "twitter.com"],
+  youtube: ["youtube.com", "youtu.be"],
+  github: ["github.com"],
+  tiktok: ["tiktok.com"],
+};
+
+function nullableSocialUrl(value: unknown, platform: SocialPlatform): string | null {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 2048) return null;
+  const absoluteCandidate = /^[a-z][a-z\d+.-]*:/i.test(candidate)
+    ? candidate
+    : `https://${candidate.replace(/^\/\//, "")}`;
+  try {
+    const url = new URL(absoluteCandidate);
+    const hostname = url.hostname.toLowerCase();
+    const isExpectedPlatform = socialPlatformDomains[platform].some((domain) =>
+      hostname === domain || hostname.endsWith(`.${domain}`));
+    if (!["http:", "https:"].includes(url.protocol)
+      || !isExpectedPlatform
+      || url.username
+      || url.password) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function stringArray(value: unknown, field: string, maxItems = 40): string[] {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) throw new Error(`Invalid ${field}`);
   return value.slice(0, maxItems).map((item) => item.trim().slice(0, 300)).filter(Boolean);
@@ -814,11 +848,11 @@ function canonicalizeLegacyInput(
         : [],
     },
     social: {
-      linkedin: legacyEvidenceBackedValue(legacySocial.linkedin, ["social_media.linkedin"], evidence),
-      facebook: legacyEvidenceBackedValue(legacySocial.facebook, ["social_media.facebook"], evidence),
-      instagram: legacyEvidenceBackedValue(legacySocial.instagram, ["social_media.instagram"], evidence),
-      x: legacyEvidenceBackedValue(legacySocial.x, ["social_media.x"], evidence),
-      youtube: legacyEvidenceBackedValue(legacySocial.youtube, ["social_media.youtube"], evidence),
+      linkedin: legacyEvidenceBackedValue(nullableSocialUrl(legacySocial.linkedin, "linkedin"), ["social_media.linkedin"], evidence),
+      facebook: legacyEvidenceBackedValue(nullableSocialUrl(legacySocial.facebook, "facebook"), ["social_media.facebook"], evidence),
+      instagram: legacyEvidenceBackedValue(nullableSocialUrl(legacySocial.instagram, "instagram"), ["social_media.instagram"], evidence),
+      x: legacyEvidenceBackedValue(nullableSocialUrl(legacySocial.x, "x"), ["social_media.x"], evidence),
+      youtube: legacyEvidenceBackedValue(nullableSocialUrl(legacySocial.youtube, "youtube"), ["social_media.youtube"], evidence),
       github: null,
       other: legacyEvidenceBackedArray(
         safeStringArray(legacySocial.other_social_links ?? [], "social_media.other_social_links", 20),
@@ -1366,12 +1400,12 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
         ecommerce_detected: nullableBoolean(products.ecommerce_detected, "ecommerce_detected"),
       },
       social_media: {
-        linkedin: nullableString(social.linkedin ?? null, "social.linkedin", 2048),
-        facebook: nullableString(social.facebook ?? null, "social.facebook", 2048),
-        instagram: nullableString(social.instagram ?? null, "social.instagram", 2048),
-        youtube: nullableString(social.youtube ?? null, "social.youtube", 2048),
-        tiktok: nullableString(social.tiktok ?? null, "social.tiktok", 2048),
-        x: nullableString(social.x ?? null, "social.x", 2048),
+        linkedin: nullableSocialUrl(social.linkedin, "linkedin"),
+        facebook: nullableSocialUrl(social.facebook, "facebook"),
+        instagram: nullableSocialUrl(social.instagram, "instagram"),
+        youtube: nullableSocialUrl(social.youtube, "youtube"),
+        tiktok: nullableSocialUrl(social.tiktok, "tiktok"),
+        x: nullableSocialUrl(social.x, "x"),
         other_social_links: safeStringArray(social.other_social_links ?? [], "other_social_links", 30),
       },
       website_capabilities: {
@@ -1564,12 +1598,12 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       support_urls: evidenceBackedArray(root, safeStringArray(contactRoot.support_urls ?? [], "contact.support_urls", 20), "contact.support_urls", normalizedEvidence),
     },
     social: {
-      linkedin: evidenceBackedValue(root, nullableString(social.linkedin ?? null, "social.linkedin", 2048), "social.linkedin", normalizedEvidence),
-      facebook: evidenceBackedValue(root, nullableString(social.facebook ?? null, "social.facebook", 2048), "social.facebook", normalizedEvidence),
-      instagram: evidenceBackedValue(root, nullableString(social.instagram ?? null, "social.instagram", 2048), "social.instagram", normalizedEvidence),
-      x: evidenceBackedValue(root, nullableString(social.x ?? null, "social.x", 2048), "social.x", normalizedEvidence),
-      youtube: evidenceBackedValue(root, nullableString(social.youtube ?? null, "social.youtube", 2048), "social.youtube", normalizedEvidence),
-      github: evidenceBackedValue(root, nullableString(social.github ?? null, "social.github", 2048), "social.github", normalizedEvidence),
+      linkedin: evidenceBackedValue(root, nullableSocialUrl(social.linkedin, "linkedin"), "social.linkedin", normalizedEvidence),
+      facebook: evidenceBackedValue(root, nullableSocialUrl(social.facebook, "facebook"), "social.facebook", normalizedEvidence),
+      instagram: evidenceBackedValue(root, nullableSocialUrl(social.instagram, "instagram"), "social.instagram", normalizedEvidence),
+      x: evidenceBackedValue(root, nullableSocialUrl(social.x, "x"), "social.x", normalizedEvidence),
+      youtube: evidenceBackedValue(root, nullableSocialUrl(social.youtube, "youtube"), "social.youtube", normalizedEvidence),
+      github: evidenceBackedValue(root, nullableSocialUrl(social.github, "github"), "social.github", normalizedEvidence),
       other: evidenceBackedArray(root, safeStringArray(social.other ?? [], "social.other", 20), "social.other", normalizedEvidence),
     },
     qualification: {
