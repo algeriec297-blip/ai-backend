@@ -301,24 +301,24 @@ function evidenceAnchor(field: string): RegExp | null {
   const rules: Record<string, RegExp> = {
     mobile_friendly: /\b(?:mobile[- ]friendly|responsive (?:design|layout|website|site)|optimized for mobile|mobile optimized|designed for mobile)\b/,
     has_mobile_optimization: /\b(?:mobile[- ]friendly|responsive (?:design|layout|website|site)|optimized for mobile|mobile optimized|designed for mobile)\b/,
-    appears_b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b/,
-    b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b/,
-    appears_b2c: /\b(?:b2c|consumer(?:s)?|individuals|households|personal use)\b/,
+    appears_b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b|(?:الشركات|للأعمال|مؤسسات)/u,
+    b2b: /\b(?:b2b|business(?:es)?|enterprise|business to business)\b|(?:الشركات|للأعمال|مؤسسات)/u,
+    appears_b2c: /\b(?:b2c|consumer(?:s)?|individuals|households|personal use)\b|(?:الأفراد|المستهلكين|للاستخدام الشخصي)/u,
     appears_b2b2c: /\b(?:b2b2c|business[- ]to[- ]business[- ]to[- ]consumer)\b/,
-    online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
-    has_online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
+    online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b|(?:حجز|احجز|الحجوزات|المواعيد|جدولة)/u,
+    has_online_booking: /\b(?:book(?:ing)?|appointment|schedule)\b|(?:حجز|احجز|الحجوزات|المواعيد|جدولة)/u,
     lacks_online_booking: /\b(?:no online booking|booking unavailable|appointments? by phone only|call to book|book by phone only)\b/,
-    booking_system: /\b(?:book(?:ing)?|appointment|schedule)\b/,
-    has_booking: /\b(?:book(?:ing)?|appointment|schedule)\b/,
-    contact_form: /\b(?:contact form|contact us|send us a message)\b/,
-    has_contact_form: /\b(?:contact form|contact us|send us a message)\b/,
-    pricing_page: /\b(?:pricing|prices?|plans?)\b/,
-    has_pricing: /\b(?:pricing|prices?|plans?)\b/,
-    ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b/,
-    has_ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b/,
+    booking_system: /\b(?:book(?:ing)?|appointment|schedule)\b|(?:حجز|احجز|الحجوزات|المواعيد|جدولة)/u,
+    has_booking: /\b(?:book(?:ing)?|appointment|schedule)\b|(?:حجز|احجز|الحجوزات|المواعيد|جدولة)/u,
+    contact_form: /\b(?:contact form|contact us|send us a message)\b|(?:نموذج الاتصال|اتصل بنا|تواصل معنا|أرسل لنا رسالة)/u,
+    has_contact_form: /\b(?:contact form|contact us|send us a message)\b|(?:نموذج الاتصال|اتصل بنا|تواصل معنا|أرسل لنا رسالة)/u,
+    pricing_page: /\b(?:pricing|prices?|plans?)\b|(?:الأسعار|السعر|خطط الأسعار|الباقات)/u,
+    has_pricing: /\b(?:pricing|prices?|plans?)\b|(?:الأسعار|السعر|خطط الأسعار|الباقات)/u,
+    ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b|(?:متجر إلكتروني|تسوق عبر الإنترنت|اشتر الآن|إتمام الشراء)/u,
+    has_ecommerce: /\b(?:online store|shop online|checkout|buy online|e[- ]?commerce|sell(?:ing)? (?:products )?online|online selling)\b|(?:متجر إلكتروني|تسوق عبر الإنترنت|اشتر الآن|إتمام الشراء)/u,
     lacks_ecommerce: /\b(?:no online store|does not sell online|doesn't sell online|online purchases? unavailable)\b/,
-    online_payment: /\b(?:online payments?|accept payments online|pay online|checkout|payment methods?)\b/,
-    has_online_payment: /\b(?:online payments?|accept payments online|pay online|checkout|payment methods?)\b/,
+    online_payment: /\b(?:online payments?|accept payments online|pay online|checkout|payment methods?)\b|(?:الدفع عبر الإنترنت|الدفع الإلكتروني|ادفع الآن|طرق الدفع)/u,
+    has_online_payment: /\b(?:online payments?|accept payments online|pay online|checkout|payment methods?)\b|(?:الدفع عبر الإنترنت|الدفع الإلكتروني|ادفع الآن|طرق الدفع)/u,
     ssl: /\b(?:ssl|https|secure connection)\b/,
     whatsapp: /\b(?:whatsapp|wa me)\b/,
     has_whatsapp: /\b(?:whatsapp|wa me)\b/,
@@ -342,12 +342,25 @@ function evidenceAnchor(field: string): RegExp | null {
   return rules[key] ?? null;
 }
 
-function evidenceSupportsClaim(root: Record<string, unknown>, field: string, quote: string): boolean {
+function evidenceSupportsClaim(
+  root: Record<string, unknown>,
+  field: string,
+  quote: string,
+  status?: AnalysisStatus,
+  reason?: string,
+): boolean {
   const normalizedQuote = normalizeEvidenceText(quote);
   if (!normalizedQuote) return false;
   const claimValue = evidenceClaimValue(root, field);
   if (typeof claimValue === "string" && claimValue.trim()) {
-    return normalizedQuote.includes(normalizeEvidenceText(claimValue));
+    if (normalizedQuote.includes(normalizeEvidenceText(claimValue))) return true;
+    const reasonText = typeof reason === "string" ? normalizeEvidenceText(reason) : "";
+    const quoteTerms = normalizedQuote.match(/[\p{L}\p{N}]{3,}/gu) ?? [];
+    const reasonReferencesSource = quoteTerms.some((term) => !evidenceReasonStopWords.has(term) && reasonText.includes(term));
+    return status === "INFERENCE"
+      && inferentialEvidenceFields.has(field)
+      && reasonText.length >= 20
+      && reasonReferencesSource;
   }
 
   const key = field.split(".").at(-1)?.toLowerCase();
@@ -450,6 +463,18 @@ const evidenceFieldAliases: Record<string, string[]> = {
   "qualification.b2c": ["qualification_signals.appears_b2c", "qualification_signals.b2c"],
 };
 
+const inferentialEvidenceFields = new Set([
+  "identity.industry",
+  "identity.sub_industry",
+  "identity.business_model",
+  "identity.business_type",
+  "identity.target_market",
+]);
+const evidenceReasonStopWords = new Set([
+  "the", "and", "for", "from", "this", "that", "page", "site", "website", "company", "business",
+  "service", "services", "provide", "provides", "with", "which", "supports",
+]);
+
 function evidenceFieldsForCanonicalPath(path: string): string[] {
   const aliases = evidenceFieldAliases[path] ?? [];
   const serviceMatch = /^offerings\.(services|products)\.(\d+)\.(name|description)$/.exec(path);
@@ -472,7 +497,13 @@ function hasEvidenceForPath(
 ): boolean {
   const fields = evidenceFieldsForCanonicalPath(path);
   return evidence.some((item) => fields.includes(item.field)
-    && evidenceSupportsClaim(root, item.field, item.quote ?? item.excerpt ?? ""));
+    && evidenceSupportsClaim(
+      root,
+      item.field,
+      item.quote ?? item.excerpt ?? "",
+      item.status ?? (item.kind === "inference" ? "INFERENCE" : "FACT"),
+      item.reason,
+    ));
 }
 
 function evidenceBackedArray(
@@ -1131,7 +1162,13 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       const pageText = sourceTextByUrl.get(url);
       if (!url || pageText === undefined || !evidenceMatchesSource(pageText, excerpt)) return [];
       const field = typeof item.field === "string" ? item.field.trim().slice(0, 120) : "unknown";
-      if (!field || !evidenceSupportsClaim(root, field, excerpt)) return [];
+      if (!field || !evidenceSupportsClaim(
+        root,
+        field,
+        excerpt,
+        item.kind === "inference" ? "INFERENCE" : "FACT",
+        typeof item.reason === "string" ? item.reason : undefined,
+      )) return [];
       if (item.confidence !== null && (typeof item.confidence !== "number"
         || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) return [];
       return [{
@@ -1390,7 +1427,8 @@ export function validateBusinessAnalysis(value: unknown, sourceTextByUrl: Map<st
       const id = nullableString(evidenceItem.id ?? null, "evidence.id", 50);
       if (!id || status === "UNKNOWN" || !sourceUrl || !sourceTextByUrl.has(sourceUrl) || !quote
         || !evidenceMatchesSource(pageText, quote)
-        || !evidenceSupportsClaim(root, field, quote)) return [];
+        || !evidenceSupportsClaim(root, field, quote, status,
+          typeof evidenceItem.reason === "string" ? evidenceItem.reason : undefined)) return [];
       return [{
         id,
         field,
