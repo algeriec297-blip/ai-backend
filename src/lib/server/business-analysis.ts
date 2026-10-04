@@ -37,8 +37,30 @@ interface PageContent {
   };
 }
 
-const pageKeywords = ["about", "company", "contact", "service", "product", "pricing", "price", "book", "booking", "appointment", "faq"];
 const secondaryPageConcurrency = 3;
+
+function pagePriority(pathname: string, label: string): number {
+  const path = pathname.toLowerCase().replace(/\/+$/, "") || "/";
+  const content = `${path} ${label.toLowerCase()}`;
+  if (/(?:^|\/)(?:events?|webinars?|news|press|careers?|jobs?)(?:\/|$)/.test(path)) return -1;
+  if (/(?:^|\/)(?:features?|products?|platform)(?:\/|$)/.test(path)) return 1_000;
+  if (/(?:^|\/)(?:pricing|plans?)(?:\/|$)/.test(path) || /\bpricing\b/.test(content)) return 950;
+  if (/(?:^|\/)(?:about|company)(?:\/|$)/.test(path) || /\babout (?:us|the company)\b/.test(content)) return 900;
+  if (/(?:^|\/)(?:integrations?|developers?|api|docs?)(?:\/|$)/.test(path)) return 850;
+  if (/(?:^|\/)(?:security|trust|compliance)(?:\/|$)/.test(path)) return 800;
+  if (/(?:^|\/)(?:contact|sales|demo)(?:\/|$)/.test(path)) return 700;
+  if (/(?:^|\/)(?:features?|products?|platform)(?:\/|$)/.test(path)) return 650;
+  if (/(?:^|\/)(?:solutions?|industries|customers?)(?:\/|$)/.test(path)) return 450;
+  if (/(?:^|\/)(?:services?)(?:\/|$)/.test(path)) return 400;
+  return 0;
+}
+
+function linkPriority(url: string, label: string): number {
+  const value = `${url} ${label}`.toLowerCase();
+  if (/linkedin\.com|facebook\.com|instagram\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|github\.com|tiktok\.com/.test(value)) return 100;
+  if (/pricing|plans?|about|company|product|feature|platform|integration|developer|\/api|\/docs|security|contact|sales|demo|sign.?up|login|download|app store|google play/.test(value)) return 80;
+  return 0;
+}
 
 function structuredOrganizationData($: cheerio.CheerioAPI): {
   companyName: string;
@@ -129,10 +151,11 @@ export function extractPage(html: string, url: string): PageContent {
     } catch {
       return [];
     }
-  }).slice(0, 80);
+  }).sort((left, right) => linkPriority(right.url, right.label) - linkPriority(left.url, left.label))
+    .slice(0, 80);
   const bookingLinkDetected = links.some(({ url: link }) => /book|booking|appointment|schedule/i.test(link));
   const whatsappLinkDetected = links.some(({ url: link }) => /wa\.me|whatsapp\.com/i.test(link));
-  $("script, style, noscript, svg, iframe").remove();
+  $("script, style, noscript, svg, iframe, nav, [role='navigation'], footer, [role='contentinfo']").remove();
   const blockText = $("h1, h2, h3, p, li, a, button, label").toArray()
     .map((element) => $(element).text().replace(/\s+/g, " ").trim())
     .filter(Boolean)
@@ -220,6 +243,8 @@ function fallbackIdentityEvidence(pages: PageContent[]): Array<{
     reason: "The industry is explicitly stated in structured page metadata.",
   });
   const industryRules: Array<{ industry: string; pattern: RegExp }> = [
+    { industry: "Workplace collaboration software", pattern: /(?:workplace collaboration|team communication|collaboration software|connect(?:ing)? teams)/i },
+    { industry: "Workflow automation software", pattern: /(?:workflow automation|automating workflows|automate workflows)/i },
     { industry: "Travel and hospitality", pattern: /vacation rentals?|holiday rentals?|places to stay|accommodation|lodging|إيجارات العطلات|مكان إقامة|أماكن الإقامة|بيوت للإيجار|تجارب سفر/iu },
     { industry: "Financial technology", pattern: /payment processing|online payments?|financial technology|معالجة المدفوعات|المدفوعات الإلكترونية/iu },
     { industry: "E-commerce and retail", pattern: /online store|shop online|e-commerce|متجر إلكتروني|التسوق عبر الإنترنت/iu },
@@ -242,11 +267,58 @@ function fallbackIdentityEvidence(pages: PageContent[]): Array<{
     });
     break;
   }
+
+  const sources = pages.map((page) => ({
+    page,
+    text: [page.title, page.description, page.metadataText, page.text].join("\n"),
+  }));
+  const businessTypeSource = sources.find(({ text }) => /(?:AI work platform|SaaS|software platform|collaboration software|workflow automation)/i.test(text));
+  const businessTypeQuote = businessTypeSource?.text.match(/(?:AI work platform|SaaS|software platform|collaboration software|workflow automation)/i)?.[0];
+  if (businessTypeSource && businessTypeQuote) output.push({
+    field: "identity.business_type",
+    value: "SaaS collaboration platform",
+    status: "INFERENCE",
+    quote: businessTypeQuote,
+    sourceUrl: businessTypeSource.page.url,
+    reason: `The offering is described as "${businessTypeQuote}", indicating software delivered as a collaboration platform.`,
+  });
+  const subIndustrySource = sources.find(({ text }) => /(?:team communication|team messaging|connect(?:ing)? teams|collaboration software)/i.test(text));
+  const subIndustryQuote = subIndustrySource?.text.match(/(?:team communication|team messaging|connect(?:ing)? teams|collaboration software)/i)?.[0];
+  if (subIndustrySource && subIndustryQuote) output.push({
+    field: "identity.sub_industry",
+    value: "Team collaboration software",
+    status: "INFERENCE",
+    quote: subIndustryQuote,
+    sourceUrl: subIndustrySource.page.url,
+    reason: `The page describes "${subIndustryQuote}", supporting a more specific team-collaboration classification.`,
+  });
+
+  const audienceSource = sources.find(({ text }) => /(?:teams|organizations|businesses|enterprise)/i.test(text));
+  const audienceQuote = audienceSource?.text.match(/(?:teams|organizations|businesses|enterprise)/i)?.[0];
+  if (audienceSource && audienceQuote) {
+    output.push({
+      field: "identity.business_model",
+      value: "B2B",
+      status: "INFERENCE",
+      quote: audienceQuote,
+      sourceUrl: audienceSource.page.url,
+      reason: `The page positions the offering for "${audienceQuote}", supporting a business-to-business audience inference.`,
+    });
+    output.push({
+      field: "identity.target_market",
+      value: "Work teams and organizations",
+      status: "INFERENCE",
+      quote: audienceQuote,
+      sourceUrl: audienceSource.page.url,
+      reason: `The explicit audience term "${audienceQuote}" supports an organizational target-market inference.`,
+    });
+  }
   return output;
 }
 
 function fallbackService(pages: PageContent[]): { name: string; quote: string; sourceUrl: string } | null {
   const phrases = [
+    /AI work platform|team communication|team messaging|workflow automation|collaboration platform|project management/i,
     /vacation rentals?|holiday rentals?|places to stay|accommodation|lodging|إيجارات العطلات|مكان إقامة|أماكن الإقامة|بيوت للإيجار|تجارب سفر/iu,
     /payment processing|online payments?|معالجة المدفوعات|المدفوعات الإلكترونية/iu,
     /appointment scheduling|schedule meetings|جدولة المواعيد|حجز المواعيد/iu,
@@ -261,6 +333,146 @@ function fallbackService(pages: PageContent[]): { name: string; quote: string; s
   return null;
 }
 
+type LinkFallbackCandidate =
+  | { field: "commercial.has_pricing" | "commercial.has_demo"; value: true; quote: string; sourceUrl: string }
+  | { field: "conversion_signals.has_demo_cta" | "conversion_signals.has_sales_cta" | "conversion_signals.has_signup" | "conversion_signals.has_login"; value: true; quote: string; sourceUrl: string }
+  | { field: "digital_capabilities.api" | "digital_capabilities.documentation" | "digital_capabilities.developer_platform" | "digital_capabilities.mobile_app"; value: true; quote: string; sourceUrl: string }
+  | { field: "social.linkedin" | "social.facebook" | "social.instagram" | "social.x" | "social.youtube" | "social.github"; value: string; quote: string; sourceUrl: string };
+
+function fallbackLinkEvidence(pages: PageContent[]): LinkFallbackCandidate[] {
+  const output: LinkFallbackCandidate[] = [];
+  const definitions: Array<{
+    field: LinkFallbackCandidate["field"];
+    pattern: RegExp;
+    urlPattern?: RegExp;
+  }> = [
+    { field: "commercial.has_pricing", pattern: /\bpricing\b/i },
+    { field: "commercial.has_demo", pattern: /\bdemo\b/i },
+    { field: "conversion_signals.has_demo_cta", pattern: /\bdemo\b/i },
+    { field: "conversion_signals.has_sales_cta", pattern: /\b(?:contact sales|talk to sales)\b/i },
+    { field: "conversion_signals.has_signup", pattern: /\b(?:sign up|signup|get started)\b/i },
+    { field: "conversion_signals.has_login", pattern: /\b(?:log in|login|sign in)\b/i },
+    { field: "digital_capabilities.api", pattern: /\bapi\b/i },
+    { field: "digital_capabilities.documentation", pattern: /\b(?:documentation|docs)\b/i },
+    { field: "digital_capabilities.developer_platform", pattern: /\bdevelopers?\b/i },
+    { field: "digital_capabilities.mobile_app", pattern: /\b(?:app store|google play)\b/i },
+    { field: "social.linkedin", pattern: /linkedin\.com/i, urlPattern: /linkedin\.com/i },
+    { field: "social.facebook", pattern: /facebook\.com/i, urlPattern: /facebook\.com/i },
+    { field: "social.instagram", pattern: /instagram\.com/i, urlPattern: /instagram\.com/i },
+    { field: "social.x", pattern: /(?:x\.com|twitter\.com)/i, urlPattern: /(?:x\.com|twitter\.com)/i },
+    { field: "social.youtube", pattern: /(?:youtube\.com|youtu\.be)/i, urlPattern: /(?:youtube\.com|youtu\.be)/i },
+    { field: "social.github", pattern: /github\.com/i, urlPattern: /github\.com/i },
+  ];
+  const seen = new Set<string>();
+  for (const page of pages) {
+    for (const link of page.observations.links) {
+      for (const definition of definitions) {
+        if (seen.has(definition.field)) continue;
+        const match = definition.urlPattern
+          ? link.url.match(definition.urlPattern)
+          : link.label.match(definition.pattern) ?? link.url.match(definition.pattern);
+        if (!match) continue;
+        const isSocial = definition.field.startsWith("social.");
+        const candidate = {
+          field: definition.field,
+          value: isSocial ? link.url : true,
+          quote: isSocial ? link.url : match[0],
+          sourceUrl: page.url,
+        } as LinkFallbackCandidate;
+        output.push(candidate);
+        seen.add(definition.field);
+      }
+    }
+  }
+  return output;
+}
+
+function applyLinkFallback(
+  analysis: BusinessAnalysis,
+  candidate: LinkFallbackCandidate,
+  evidenceId: string,
+): boolean {
+  const supported = (value: { status?: string } | undefined) => !value || value.status === "UNKNOWN";
+  const field = {
+    value: true,
+    status: "FACT" as const,
+    confidence: 0.82,
+    evidence_ids: [evidenceId],
+  };
+  switch (candidate.field) {
+    case "commercial.has_pricing":
+      if (!supported(analysis.commercial.has_pricing)) return false;
+      analysis.commercial.has_pricing = field;
+      return true;
+    case "commercial.has_demo":
+      if (!supported(analysis.commercial.has_demo)) return false;
+      analysis.commercial.has_demo = field;
+      return true;
+    case "conversion_signals.has_demo_cta":
+      if (!supported(analysis.conversion_signals.has_demo_cta)) return false;
+      analysis.conversion_signals.has_demo_cta = field;
+      return true;
+    case "conversion_signals.has_sales_cta":
+      if (!supported(analysis.conversion_signals.has_sales_cta)) return false;
+      analysis.conversion_signals.has_sales_cta = field;
+      return true;
+    case "conversion_signals.has_signup":
+      if (!supported(analysis.conversion_signals.has_signup)) return false;
+      analysis.conversion_signals.has_signup = field;
+      return true;
+    case "conversion_signals.has_login":
+      if (!supported(analysis.conversion_signals.has_login)) return false;
+      analysis.conversion_signals.has_login = field;
+      return true;
+    case "digital_capabilities.api":
+      if (!supported(analysis.digital_capabilities.api)) return false;
+      analysis.digital_capabilities.api = field;
+      return true;
+    case "digital_capabilities.documentation":
+      if (!supported(analysis.digital_capabilities.documentation)) return false;
+      analysis.digital_capabilities.documentation = field;
+      return true;
+    case "digital_capabilities.developer_platform":
+      if (!supported(analysis.digital_capabilities.developer_platform)) return false;
+      analysis.digital_capabilities.developer_platform = field;
+      return true;
+    case "digital_capabilities.mobile_app":
+      if (!supported(analysis.digital_capabilities.mobile_app)) return false;
+      analysis.digital_capabilities.mobile_app = field;
+      return true;
+    case "social.linkedin":
+      if (analysis.social.linkedin) return false;
+      if (typeof candidate.value !== "string") return false;
+      analysis.social.linkedin = candidate.value;
+      return true;
+    case "social.facebook":
+      if (analysis.social.facebook) return false;
+      if (typeof candidate.value !== "string") return false;
+      analysis.social.facebook = candidate.value;
+      return true;
+    case "social.instagram":
+      if (analysis.social.instagram) return false;
+      if (typeof candidate.value !== "string") return false;
+      analysis.social.instagram = candidate.value;
+      return true;
+    case "social.x":
+      if (analysis.social.x) return false;
+      if (typeof candidate.value !== "string") return false;
+      analysis.social.x = candidate.value;
+      return true;
+    case "social.youtube":
+      if (analysis.social.youtube) return false;
+      if (typeof candidate.value !== "string") return false;
+      analysis.social.youtube = candidate.value;
+      return true;
+    case "social.github":
+      if (analysis.social.github) return false;
+      if (typeof candidate.value !== "string") return false;
+      analysis.social.github = candidate.value;
+      return true;
+  }
+}
+
 function addSourceBackedFallbacks(result: BusinessAnalysis, pages: PageContent[]): BusinessAnalysis {
   if (!result.identity) return result;
   const candidates = fallbackIdentityEvidence(pages);
@@ -269,7 +481,8 @@ function addSourceBackedFallbacks(result: BusinessAnalysis, pages: PageContent[]
     return result.identity[path].status === "UNKNOWN";
   });
   const serviceCandidate = result.offerings?.services?.length ? null : fallbackService(pages);
-  if (missingCandidates.length === 0 && !serviceCandidate) return result;
+  const linkCandidates = fallbackLinkEvidence(pages);
+  if (missingCandidates.length === 0 && !serviceCandidate && linkCandidates.length === 0) return result;
 
   const enriched = {
     ...result,
@@ -278,6 +491,10 @@ function addSourceBackedFallbacks(result: BusinessAnalysis, pages: PageContent[]
       ...result.offerings,
       services: [...(result.offerings?.services ?? [])],
     },
+    commercial: { ...result.commercial },
+    conversion_signals: { ...result.conversion_signals },
+    digital_capabilities: { ...result.digital_capabilities },
+    social: { ...result.social },
     evidence: [...result.evidence],
   };
   for (const candidate of missingCandidates) {
@@ -296,7 +513,7 @@ function addSourceBackedFallbacks(result: BusinessAnalysis, pages: PageContent[]
       confidence: candidate.status === "FACT" ? 0.9 : 0.78,
       quote: candidate.quote,
       source_url: candidate.sourceUrl,
-      source_page_type: "homepage",
+      source_page_type: "website page",
       reason: candidate.reason,
     });
   }
@@ -317,8 +534,22 @@ function addSourceBackedFallbacks(result: BusinessAnalysis, pages: PageContent[]
       confidence,
       quote: serviceCandidate.quote,
       source_url: serviceCandidate.sourceUrl,
-      source_page_type: "homepage",
+      source_page_type: "website page",
       reason: "This offering category appears verbatim in the page content.",
+    });
+  }
+  for (const [index, candidate] of linkCandidates.entries()) {
+    const evidenceId = `source_link_${index}`;
+    if (!applyLinkFallback(enriched, candidate, evidenceId)) continue;
+    enriched.evidence.push({
+      id: evidenceId,
+      field: candidate.field,
+      status: "FACT",
+      confidence: 0.82,
+      quote: candidate.quote,
+      source_url: candidate.sourceUrl,
+      source_page_type: "homepage",
+      reason: `The fetched page links to ${candidate.quote}, directly indicating this capability or profile link.`,
     });
   }
   const validated = validateBusinessAnalysis(enriched, new Map(pages.map((page) => [
@@ -353,8 +584,8 @@ export function discoverPages(homeHtml: string, baseUrl: string): string[] {
       const normalized = target.toString();
       if (seen.has(normalized)) return;
       seen.add(normalized);
-      const label = `${target.pathname} ${$(element).text()}`.toLowerCase();
-      const score = pageKeywords.reduce((total, keyword) => total + Number(label.includes(keyword)), 0);
+      const label = $(element).text().replace(/\s+/g, " ").trim().slice(0, 120);
+      const score = pagePriority(target.pathname, label);
       if (score > 0) candidates.push({ url: normalized, score });
     } catch {
       return;
