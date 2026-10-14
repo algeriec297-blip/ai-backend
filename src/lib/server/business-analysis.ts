@@ -596,7 +596,7 @@ export function discoverPages(homeHtml: string, baseUrl: string): string[] {
     .map(({ url }) => url);
 }
 
-export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
+export async function analyzeWebsite(url: URL, customCriteria?: string[]): Promise<AnalyzedWebsite> {
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), appConfig.analysis.totalTimeoutMs);
   const pages: PageContent[] = [];
@@ -665,7 +665,7 @@ export async function analyzeWebsite(url: URL): Promise<AnalyzedWebsite> {
     if (readableContent.length < 40) {
       throw new ApiError("SITE_BLOCKED", "The website did not provide enough readable content.");
     }
-    const analysis = await analyzeWithGemini(pages, controller.signal);
+    const analysis = await analyzeWithGemini(pages, controller.signal, customCriteria);
     analysis.result = addSourceBackedFallbacks(analysis.result, pages);
     const canonicalUrl = pages[0]?.url ?? url.toString();
     analysis.result.request = {
