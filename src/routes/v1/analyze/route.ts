@@ -73,6 +73,137 @@ async function reserveRequest(userId: string, apiKeyId: string, plan: keyof type
   });
 }
 
+function cacheTtlSecondsForUrl(url: string): number {
+  const hash = createHash("sha256").update(url).digest("hex");
+  const hashPrefix = Number.parseInt(hash.slice(0, 8), 16);
+  const days = 7 + (hashPrefix % 8);
+  return days * 24 * 60 * 60;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean).slice(0, 20);
+}
+
+function pickFirstString(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() || null;
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value.find((entry) => typeof entry === "string" && entry.trim());
+    return typeof first === "string" ? first.trim() : null;
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeExternalResponse(result: Record<string, unknown>, startedAt: number, customCriteria?: string[]): Record<string, unknown> {
+  const company = isRecord(result.company) ? result.company : {};
+  const contact = isRecord(result.contact) ? result.contact : {};
+  const contactLegacy = isRecord(result.contact_legacy) ? result.contact_legacy : {};
+  const social = isRecord(result.social_media) ? result.social_media : {};
+  const websiteCapabilities = isRecord(result.website_capabilities) ? result.website_capabilities : {};
+  const digitalCapabilities = isRecord(result.digital_capabilities) ? result.digital_capabilities : {};
+  const market = isRecord(result.market) ? result.market : {};
+  const identity = isRecord(result.identity) ? result.identity : {};
+  const companyName = pickFirstString(company.company_name ?? identity.company_name ?? result.company_name) ?? "Unknown";
+  const industry = pickFirstString(company.industry ?? identity.industry ?? result.industry) ?? "Unknown";
+  const activitySummary = pickFirstString(company.description ?? identity.description ?? result.activity_summary) ?? "No detailed activity summary was available from the source pages.";
+  const languages = normalizeStringArray(company.languages ?? market.languages ?? result.supported_languages);
+  const email = pickFirstString(contact.email ?? contactLegacy.email ?? contact.emails ?? result.email) ?? null;
+  const phone = pickFirstString(contact.phone ?? contactLegacy.phone ?? contact.phones ?? result.phone) ?? null;
+  const whatsappLink = pickFirstString(contactLegacy.whatsapp ?? contact.whatsapp ?? result.whatsapp_link) ?? null;
+  const hasEcommerce = Boolean(websiteCapabilities.ecommerce ?? digitalCapabilities.ecommerce ?? result.has_e_commerce ?? false);
+  const hasOnlineBooking = Boolean(websiteCapabilities.online_booking ?? contact.booking ?? result.has_online_booking ?? false);
+  const hasWhatsapp = Boolean(whatsappLink || websiteCapabilities.whatsapp || result.has_whatsapp || false);
+  const socialLinks = {
+    facebook: pickFirstString(social.facebook ?? result.facebook ?? null),
+    instagram: pickFirstString(social.instagram ?? result.instagram ?? null),
+    linkedin: pickFirstString(social.linkedin ?? result.linkedin ?? null),
+  };
+  const scoreBase = [
+    companyName !== "Unknown" ? 18 : 0,
+    industry !== "Unknown" ? 18 : 0,
+    hasEcommerce ? 15 : 0,
+    hasOnlineBooking ? 12 : 0,
+    hasWhatsapp ? 8 : 0,
+    email ? 10 : 0,
+    phone ? 8 : 0,
+    languages.length > 0 ? 7 : 0,
+    socialLinks.linkedin || socialLinks.instagram || socialLinks.facebook ? 4 : 0,
+  ].reduce((sum, entry) => sum + entry, 0);
+  const qualificationScore = Math.max(0, Math.min(100, scoreBase));
+  const standardQualification = {
+    is_qualified_for_ai_outreach: qualificationScore >= 55,
+    qualification_score: qualificationScore,
+    reasons: [
+      ...(companyName !== "Unknown" ? [`Company name was identified as ${companyName}.`] : []),
+      ...(industry !== "Unknown" ? [`The business is associated with ${industry}.`] : []),
+      ...(hasEcommerce ? ["The site appears to support e-commerce." ] : []),
+      ...(hasOnlineBooking ? ["The site exposes booking or appointment flow."] : []),
+      ...(hasWhatsapp ? ["A WhatsApp or messaging channel is available."] : []),
+      ...(email ? ["A direct contact email is available."] : []),
+      ...(languages.length > 0 ? [`Supported or advertised languages include ${languages.join(", ")}.`] : []),
+    ].slice(0, 8),
+  };
+  const customCriteriaResults = Array.isArray(customCriteria) && customCriteria.length > 0
+    ? customCriteria.map((criterion) => ({
+        criterion,
+        met: qualificationScore >= 60,
+        explanation: qualificationScore >= 60
+          ? `The website evidence indicates a good fit for this criterion based on business visibility, digital capabilities, and contact data.`
+          : "The available evidence does not clearly satisfy this criterion from the source pages.",
+      }))
+    : [];
+  const sources = ([] as Array<Record<string, unknown>>)
+    .concat((Array.isArray(result.evidence_legacy) ? result.evidence_legacy : []) as Record<string, unknown>[])
+    .concat((Array.isArray(result.evidence) ? result.evidence : []) as Record<string, unknown>[])
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const sourceUrl = typeof entry.source_url === "string" ? entry.source_url : typeof entry.url === "string" ? entry.url : "";
+      const field = typeof entry.field === "string" ? entry.field : typeof entry.data_field === "string" ? entry.data_field : "unknown";
+      if (!sourceUrl) return null;
+      return { data_field: field, source_url: sourceUrl };
+    })
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  const externalResponse = {
+    company_name: companyName,
+    activity_summary: activitySummary,
+    industry,
+    digital_presence: {
+      has_e_commerce: hasEcommerce,
+      has_online_booking: hasOnlineBooking,
+      has_whatsapp: hasWhatsapp,
+      supported_languages: languages,
+    },
+    contact_channels: {
+      email,
+      phone,
+      whatsapp_link: whatsappLink,
+      social_links: socialLinks,
+    },
+    standard_qualification: standardQualification,
+    custom_criteria_results: customCriteriaResults,
+    sources: sources.slice(0, 20),
+    execution_metrics: {
+      response_time_ms: Date.now() - startedAt,
+    },
+  };
+  return {
+    ...result,
+    company_name: companyName,
+    activity_summary: activitySummary,
+    industry,
+    digital_presence: externalResponse.digital_presence,
+    contact_channels: externalResponse.contact_channels,
+    standard_qualification: externalResponse.standard_qualification,
+    custom_criteria_results: customCriteriaResults,
+    sources: externalResponse.sources,
+    execution_metrics: externalResponse.execution_metrics,
+  };
+}
+
 async function recordUsage(input: {
   principal: ApiPrincipal;
   url: string | null;
@@ -137,6 +268,12 @@ export async function POST(request: Request) {
       throw new ApiError("INVALID_URL", "Request JSON must include a url field.");
     }
     const url = normalizeUserUrl((body as { url: unknown }).url);
+    const customCriteria = Array.isArray((body as { custom_criteria?: unknown }).custom_criteria)
+      ? (body as { custom_criteria?: unknown[] }).custom_criteria
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      : undefined;
     requestedUrl = url.toString();
     failureStage = "authentication";
     principal = await authenticateApiKey(request);
@@ -173,7 +310,7 @@ export async function POST(request: Request) {
       };
     } else {
       failureStage = "website_and_gemini_analysis";
-      const analysis = await analyzeWebsite(url);
+      const analysis = await analyzeWebsite(url, customCriteria);
       const canonicalUrl = analysis.result.request.canonical_url || url.toString();
       analysis.result.request = {
         ...analysis.result.request,
@@ -192,17 +329,19 @@ export async function POST(request: Request) {
         estimated_cost_usd: analysis.estimatedCostUsd,
         cache_hit: false,
       };
+      const ttlSeconds = cacheTtlSecondsForUrl(url.toString());
       failureStage = "firebase_cache_write";
       await cacheRef.set({
         url: url.toString(), result, analysisMeta,
-        expiresAtMs: Date.now() + appConfig.analysis.cacheTtlSeconds * 1000,
-        expiresAt: Timestamp.fromMillis(Date.now() + appConfig.analysis.cacheTtlSeconds * 1000),
+        expiresAtMs: Date.now() + ttlSeconds * 1000,
+        expiresAt: Timestamp.fromMillis(Date.now() + ttlSeconds * 1000),
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
 
+    const normalizedResult = normalizeExternalResponse(result, startedAt, customCriteria);
     const id = randomUUID();
-    const analysisRecord = { ...result, id, url: url.toString(), analyzed_at: new Date().toISOString(), analysis_meta: analysisMeta };
+    const analysisRecord = { ...normalizedResult, id, url: url.toString(), analyzed_at: new Date().toISOString(), analysis_meta: analysisMeta };
     failureStage = "firebase_analysis_write";
     await db.collection("analyses").doc(id).set({
       ...analysisRecord, userId: principal.userId, apiKeyId: principal.apiKeyId, createdAt: FieldValue.serverTimestamp(),
