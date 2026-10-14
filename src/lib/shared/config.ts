@@ -1,3 +1,13 @@
+const geminiKeyCsv = [
+  process.env.GEMINI_API_KEYS ?? "",
+  process.env.GEMINI_API_KEY ?? "",
+].join(",");
+
+export const parsedGeminiApiKeys = geminiKeyCsv
+  .split(/[\n,\r]+/)
+  .map((value) => value.trim())
+  .filter(Boolean);
+
 export const appConfig = {
   appUrl: process.env.APP_URL ?? "http://localhost:3000",
   apiUrl: process.env.API_URL ?? "http://localhost:3000",
@@ -6,6 +16,8 @@ export const appConfig = {
     inputUsdPerMillionTokens: Number(process.env.GEMINI_INPUT_USD_PER_MILLION ?? "0.30"),
     outputUsdPerMillionTokens: Number(process.env.GEMINI_OUTPUT_USD_PER_MILLION ?? "2.50"),
     timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? "180000"),
+    safeUsagePercent: Number(process.env.GEMINI_KEY_SAFE_PERCENT ?? "90"),
+    keys: parsedGeminiApiKeys,
   },
   analysis: {
     maxPages: Number(process.env.MAX_PAGES_PER_ANALYSIS ?? "6"),
