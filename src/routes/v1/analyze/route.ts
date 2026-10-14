@@ -166,7 +166,7 @@ function normalizeExternalResponse(result: Record<string, unknown>, startedAt: n
       if (!sourceUrl) return null;
       return { data_field: field, source_url: sourceUrl };
     })
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+    .filter((entry): entry is { data_field: string; source_url: string } => entry !== null);
   const externalResponse = {
     company_name: companyName,
     activity_summary: activitySummary,
@@ -268,8 +268,9 @@ export async function POST(request: Request) {
       throw new ApiError("INVALID_URL", "Request JSON must include a url field.");
     }
     const url = normalizeUserUrl((body as { url: unknown }).url);
-    const customCriteria = Array.isArray((body as { custom_criteria?: unknown }).custom_criteria)
-      ? (body as { custom_criteria?: unknown[] }).custom_criteria
+    const customCriteriaInput = (body as { custom_criteria?: unknown }).custom_criteria;
+    const customCriteria = Array.isArray(customCriteriaInput)
+      ? customCriteriaInput
           .filter((entry): entry is string => typeof entry === "string")
           .map((entry) => entry.trim())
           .filter(Boolean)
